@@ -71,7 +71,7 @@ Salida:
 - `ChatSummary` sin cambios (incluye `unreadCount`, `lastMessageAt`, `lastMessagePreview`, `participantCount` cuando lo hay).
 
 **Grupos sin nombre (hallazgo de la revisión, verificado en código).** En `buildChatListing()` un grupo cuya fila `Chat` no trae nombre se nombra con `fetchGroups()` (`/group/fetchAllGroups`, en vivo). Si esa llamada falla (`rate-overlimit`, 428, desconectado), `staleWhileFailing` devuelve el mapa viejo o vacío **sin avisar**, el grupo queda nombrado con su id numérico, `failed` no se marca y la lista se cachea 60 s. Resultado: `query:"chk"` → 0 coincidencias, leído como "no existe". Corrección:
-- `ChatListing` gana `unnamedGroups: number` = grupos cuyo nombre cayó al id (`localPart`).
+- Cada fila del listado interno lleva un flag `nameFromId` (nombre cayó al id), que se quita antes de responder; el tool cuenta `unnamedGroups` **después** del filtro de scope, para que un token limitado no aprenda que existen grupos fuera de su scope. `ChatSummary` público no cambia.
 - `list-chats` lo expone cuando > 0 y, si además hay `query`, añade `note`: "N grupos no tienen nombre ahora mismo (WhatsApp no respondió); una búsqueda por nombre puede no encontrarlos — reintenta en un minuto o usa `search-messages`".
 - No se cambia la política de caché (el dashboard seguiría pagando la llamada en vivo en cada carga); el aviso basta.
 
@@ -91,6 +91,7 @@ Salida: `{ contacts: [{ jid, name, number? }], count, page, total, hasMore, next
 
 - Reutiliza `listContacts()` (sobre `contactDirectory()`, caché 5 min); orden por nombre asc.
 - **Sin grupos**: se excluyen las filas `@g.us` (los grupos se buscan con `list-chats`). Filtro antes de paginar.
+- Si la agenda viene vacía: `note` diciendo que puede ser que Evolution no respondió (hoy `fetchContacts` traga el error como lista vacía); no se toca `contactDirectory` en este lote (lo comparten menciones y autores). Mi decisión.
 - `number` solo para `@s.whatsapp.net`; `@lid` sin número, sin inventarlo (ya lo hace `listContacts`). No se devuelve `profilePicUrl`.
 - **Scope (decisión del usuario: opción a).** `allChats` → toda la agenda. Si no → solo contactos cuyo `jid` está en `scope.chatJids`, aplicado **antes** de buscar y paginar. Consecuencia aceptada: un contacto cuyo chat permitido está guardado con otra forma de identidad (LID vs número) no aparece — falla cerrado.
 - `listContacts()` gana el mismo parámetro opcional de filtro (o se filtra en el tool antes de paginar con una variante); el dashboard no cambia.
@@ -116,7 +117,8 @@ Añadir un párrafo (sin tocar el resto):
 - `list-contacts` excluye grupos.
 - Contacto con LID vs número distinto al del scope → no aparece (falla cerrado).
 - Orden por defecto por última actividad real.
-- Grupos sin nombre: aviso, no cambio de caché.
+- Grupos sin nombre: aviso contado dentro del scope, no cambio de caché.
+- Agenda vacía: aviso, sin cambiar `contactDirectory`.
 
 ## Lo que queda al implementador
 
