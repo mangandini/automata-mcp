@@ -1,4 +1,4 @@
-> **Antes de explorar código, lee `CODEMAP.md`** (mapa de archivos + recetas). Luego solo la sección relevante de este archivo.
+> **Antes de explorar código, lee `CODEMAP.md`** (mapa de archivos + recetas). Para despliegue/Coolify/incidentes, lee `OPS.md`. Luego solo la sección relevante de este archivo.
 
 # CLAUDE.md
 
