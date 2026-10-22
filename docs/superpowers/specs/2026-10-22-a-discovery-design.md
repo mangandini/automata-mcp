@@ -70,6 +70,13 @@ Salida:
 - `note` también cuando `query` dio 0 resultados (sugerir fragmento más corto o `search-messages`). Qué hacer con varias coincidencias (preguntar al usuario) va en las instrucciones, no en la respuesta.
 - `ChatSummary` sin cambios (incluye `unreadCount`, `lastMessageAt`, `lastMessagePreview`, `participantCount` cuando lo hay).
 
+**Grupos sin nombre (hallazgo de la revisión, verificado en código).** En `buildChatListing()` un grupo cuya fila `Chat` no trae nombre se nombra con `fetchGroups()` (`/group/fetchAllGroups`, en vivo). Si esa llamada falla (`rate-overlimit`, 428, desconectado), `staleWhileFailing` devuelve el mapa viejo o vacío **sin avisar**, el grupo queda nombrado con su id numérico, `failed` no se marca y la lista se cachea 60 s. Resultado: `query:"chk"` → 0 coincidencias, leído como "no existe". Corrección:
+- `ChatListing` gana `unnamedGroups: number` = grupos cuyo nombre cayó al id (`localPart`).
+- `list-chats` lo expone cuando > 0 y, si además hay `query`, añade `note`: "N grupos no tienen nombre ahora mismo (WhatsApp no respondió); una búsqueda por nombre puede no encontrarlos — reintenta en un minuto o usa `search-messages`".
+- No se cambia la política de caché (el dashboard seguiría pagando la llamada en vivo en cada carga); el aviso basta.
+
+**Orden sin argumentos (mi decisión).** Hoy `listChats` corta `chatListing()` en el orden nativo de Evolution (`updatedAt DESC`, que mueven los acuses de lectura). Con este diseño el orden por defecto pasa a ser `sort:'last'` = `lastMessageAt ?? updatedAt` desc, que el propio tipo documenta como el campo correcto. Las 200 primeras pueden no ser exactamente las mismas que antes; la forma y el tamaño sí.
+
 **Comentario de cabecera:** reescribir. El argumento actual "sin paginación porque nombrar filas cuesta la tabla de contactos por llamada" ya no aplica: `chatListing()` cachea la lista nombrada 60 s, paginar es cortar en memoria.
 
 **Descripción del tool**: incluir cómo encontrar un grupo por fragmento y que `hasMore`/`truncated` significan que no está todo.
@@ -102,11 +109,21 @@ Añadir un párrafo (sin tocar el resto):
 - `docs/mcp-roadmap.md`: M1, N3, N1 → ✅ con log; `CODEMAP.md` si menciona la lista de tools.
 - `docs/using-automata.md` si enumera tools.
 
+## Mis decisiones (para que el usuario las revise)
+
+- `limit` por defecto 200 (no 100 como el roadmap) para que la llamada sin argumentos no cambie de tamaño.
+- Búsqueda sin acentos también en el dashboard.
+- `list-contacts` excluye grupos.
+- Contacto con LID vs número distinto al del scope → no aparece (falla cerrado).
+- Orden por defecto por última actividad real.
+- Grupos sin nombre: aviso, no cambio de caché.
+
 ## Lo que queda al implementador
 
 - Forma exacta del parámetro de scope en `listChatsPage`/`listContacts` (predicado vs set), siempre que se aplique antes de contar y cortar.
 - Esquemas zod (el toolkit los usa); límites de longitud de `query`.
 - Redacción en inglés de descripciones y notas.
+- `query` con número formateado ("+56 9 3536…"): opcionalmente comparar también solo dígitos contra `number`.
 
 ## Verificación / criterios de aceptación
 
@@ -114,7 +131,7 @@ Local tiene la base y Evolution pero **ninguna cuenta vinculada** (ver OPS.md), 
 
 1. `pnpm typecheck` limpio.
 2. `tools/list` muestra `list-contacts` en un token WhatsApp y no en uno Postgres.
-3. Sin argumentos, `list-chats` devuelve las mismas ≤200 filas que antes (comparar con `main`).
+3. Sin argumentos, `list-chats` devuelve ≤200 filas con la misma forma que antes, ordenadas por última actividad (baseline de `main` guardado antes del deploy para comparar).
 4. GT: `list-chats {query:"chk", type:"group"}` → exactamente el grupo `PREESCOLAR CHK 2025🏫⭐`. `query:"preescolar"` igual con acentos/mayúsculas variados.
 5. `page`/`nextPage` recorren hasta `hasMore:false`; la suma de `count` = `total`.
 6. `unreadOnly:true` devuelve solo `unreadCount>0`; anotar si el conteo baja tras leer en el teléfono.
