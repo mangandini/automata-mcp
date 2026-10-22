@@ -61,14 +61,24 @@ export default defineKindTool({
     })
 
     const { hasMore, total } = result
-    const contacts = result.contacts.map(({ jid, name, number }) => ({ jid, name, number }))
+    // Evolution falls back to the bare local part when it has no name; presented
+    // as `name` that id would be quoted as one, so it is left out instead.
+    const contacts = result.contacts.map(({ jid, name, number }) => {
+      const realName = meaningfulName(name, localPartOf(jid))
+      return { jid, ...(realName && { name: realName }), number }
+    })
 
     const notes = [
       hasMore
         ? `This page holds contacts ${(page - 1) * limit + 1}-${(page - 1) * limit + contacts.length} of ${total} matching; call list-contacts again with page: ${page + 1} and the same arguments. Do not tell the user these are all their contacts until hasMore is false.`
         : undefined,
       total === 0 && !query
-        ? 'the contact list came back empty; Evolution may not have answered — this does not mean the account has no contacts'
+        ? (scope.allChats
+          ? 'The contact list came back empty; Evolution may not have answered. This does not mean the account has no contacts.'
+          : "No contacts in this connector's chat scope.")
+        : undefined,
+      total === 0 && query
+        ? 'No contact matched; try a shorter fragment or list-chats.'
         : undefined,
     ].filter((note): note is string => Boolean(note))
 

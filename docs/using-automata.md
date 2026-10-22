@@ -65,7 +65,7 @@ comes back.
 |---|---|---|---|
 | `get-connection-status` | WhatsApp | read | Whether the account is paired and connected (`open`) |
 | `list-chats` | WhatsApp | read | Conversations in scope with the `jid` other tools take; filter by name, number or jid with `query`, by `type` (`group` / `direct`) or `unreadOnly`; `sort` by `last` activity (default) or `name`; pages of up to 200 (`page`, `limit`), with `hasMore`/`nextPage` and `truncated` / `incomplete` / `unnamedGroups` flags when the listing is partial |
-| `list-contacts` | WhatsApp | read | Address-book contacts with their `jid`, number and name; optional `query`, `page`, `limit`; says `hasMore` when there is another page |
+| `list-contacts` | WhatsApp | read | Address-book contacts (groups excluded) with their `jid`, number and name; optional `query`, `page`, `limit` (default 100); says `hasMore` when there is another page |
 | `read-messages` | WhatsApp | read | One chat, newest first, 1–200 per page (default 50), optional `since` / `until`; reports `hasMore`, `nextPage`, `covered` and `totalMatching` |
 | `search-messages` | WhatsApp | read | Messages containing every word of `query`, across chats in scope or one `jid`; optional date range and `fromMe`; up to 100 matches (default 20) |
 | `send-text-message` | WhatsApp | **write** | Send text to a number in international format |

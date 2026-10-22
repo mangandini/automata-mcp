@@ -316,8 +316,8 @@ async function buildChatListing(instance: AppInstance): Promise<{ listing: ChatL
 /**
  * Recent conversations, newest activity first.
  *
- * Kept for the token scope picker and the `list-chats` tool, which page with
- * `take`/`skip` and want Evolution's own order. A slice of the memoised listing,
+ * Kept for the token scope picker (and `search-messages`' name lookup), which page with
+ * `take`/`skip` and want Evolution's own order. `list-chats` reads `listChatsPage`. A slice of the memoised listing,
  * so it and the dashboard's table can never disagree about what exists.
  */
 export async function listChats(instance: AppInstance, query: ChatQuery = {}): Promise<ChatPage> {

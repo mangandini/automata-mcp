@@ -11,11 +11,11 @@
 
 | ID | Ítem | Tipo | Prioridad | Estado |
 |---|---|---|---|---|
-| M1 | `list-chats`: búsqueda, filtro grupo/directo, paginación | Mejora | Alta | 🟡 |
-| N1 | `list-contacts` | Nuevo | Alta | 🟡 |
+| M1 | `list-chats`: búsqueda, filtro grupo/directo, paginación | Mejora | Alta | 🟨 |
+| N1 | `list-contacts` | Nuevo | Alta | 🟨 |
 | M2 | `search-messages`: paginación + filtro por autor | Mejora | Media | ⬜ |
 | N2 | `get-group-info` (participantes, admins, descripción) | Nuevo | Media | ⬜ |
-| N3 | `list-unread` (pendientes) | Nuevo | Media | 🟡 |
+| N3 | `list-unread` (pendientes) | Nuevo | Media | 🟨 |
 | M3 | `send-text-message`: enviar a grupos (`jid`) y citar | Mejora | Media | ⬜ |
 | N4 | `get-message-media` (descargar adjuntos) | Nuevo | Baja | ⬜ |
 | X1 | Conector único para varios números | — | — | ⛔ |
@@ -64,7 +64,7 @@ Hallazgos de la prueba real (2026-10-22, ambos tokens contra producción):
 - Definir con `defineKindTool`, nunca `defineMcpTool`; `name`, `title`, `description` pensada para el modelo, `readOnlyHint`/`destructiveHint` correctos.
 - Basename del archivo único en todo `tools/` (el nombre del tool sale de ahí).
 - Sin argumento de conexión ni credenciales como parámetro.
-- Scope del token como **predicado / filtro antes de devolver** (`filterChatsToScope`, `assertChatAllowed`, `assertNumberAllowed`); fallar cerrado.
+- Scope del token como **predicado / filtro antes de devolver** (predicado en SQL vía `allowedJids`, `assertChatAllowed`, `assertNumberAllowed`); fallar cerrado.
 - Las páginas dicen que son páginas: `hasMore` (de `limit+1`, nunca de `total`), `note` en palabras cuando hay más.
 - Nunca normalizar JIDs localmente (`resolveNumberToJid`).
 - Lecturas de mensajes solo por SQL parametrizado con `"instanceId"` (`evolution-db.ts`).
@@ -74,14 +74,14 @@ Hallazgos de la prueba real (2026-10-22, ambos tokens contra producción):
 
 ---
 
-## M1 · `list-chats`: búsqueda, filtro y paginación — Alta · 🟡
+## M1 · `list-chats`: búsqueda, filtro y paginación — Alta · 🟨
 
 **Problema.** Sin parámetros; solo los 200 chats más recientes. Grupos/chats antiguos inalcanzables salvo por `search-messages`.
 
 **Propuesta.** Parámetros opcionales (sin ellos, comportamiento compatible):
 - `query?: string` — subcadena en nombre, número o jid.
 - `type?: 'all' | 'group' | 'direct'` (def. `all`).
-- `sort?: 'last' | 'name'`, `page?: number` (1-based), `limit?: number` (1–200, def. 100).
+- `sort?: 'last' | 'name'`, `page?: number` (1-based), `limit?: number` (1–200, def. 200).
 - Respuesta: `chats`, `count`, `page`, `hasMore`, `total` (si se conoce), `truncated`/`incomplete` traducidos a `note`.
 
 **Base existente.** `listChatsPage(instance, { q, sort, dir, limit, page })` en `utils/chats.ts` (la usa el dashboard `api/instances/[id]/chats/index.get.ts`); trabaja sobre `chatListing()` (recorre hasta 10 000 chats, caché 60 s). Falta el filtro `type` (por `isGroup`).
@@ -100,9 +100,9 @@ Hallazgos de la prueba real (2026-10-22, ambos tokens contra producción):
 
 **Log.**
 - 2026-10-22 — evaluado.
-- 2026-10-22 — implementado en `feat/a-discovery` (🟡 hasta verificar en producción). Defaults decididos: `limit` 200, `sort` `last`. Añade `unreadOnly` (resuelve N3) y `WHATSAPP_INSTRUCTIONS` enseña a buscar por nombre.
+- 2026-10-22 — implementado en `feat/a-discovery` (🟨 hasta verificar en producción). Defaults decididos: `limit` 200, `sort` `last`. Añade `unreadOnly` (resuelve N3) y `WHATSAPP_INSTRUCTIONS` enseña a buscar por nombre.
 
-## N1 · `list-contacts` — Alta · 🟡
+## N1 · `list-contacts` — Alta · 🟨
 
 **Problema.** Para escribir o leer a alguien, el modelo necesita su `jid`/número; hoy solo puede deducirlo de `list-chats` (top 200) o buscando mensajes.
 
@@ -122,7 +122,7 @@ Hallazgos de la prueba real (2026-10-22, ambos tokens contra producción):
 
 **Log.**
 - 2026-10-22 — evaluado.
-- 2026-10-22 — implementado en `feat/a-discovery` (🟡 hasta verificar en producción): `list-contacts { query, page, limit }`.
+- 2026-10-22 — implementado en `feat/a-discovery` (🟨 hasta verificar en producción): `list-contacts { query, page, limit }`.
 
 ## M2 · `search-messages`: paginación y autor — Media · ⬜
 
@@ -157,7 +157,7 @@ Hallazgos de la prueba real (2026-10-22, ambos tokens contra producción):
 **Log.**
 - 2026-10-22 — evaluado.
 
-## N3 · `list-unread` — Media · 🟡
+## N3 · `list-unread` — Media · 🟨
 
 **Propuesta.** Chats con `unreadCount > 0`, ordenados por última actividad, con preview. Alternativa más barata: `list-chats {unreadOnly:true}` dentro de M1 (preferible: menos tools).
 
@@ -165,7 +165,7 @@ Hallazgos de la prueba real (2026-10-22, ambos tokens contra producción):
 
 **Log.**
 - 2026-10-22 — evaluado; probablemente se resuelve como opción de M1.
-- 2026-10-22 — resuelto como `unreadOnly` de `list-chats` (M1), sin tool nueva; 🟡 hasta verificar en producción.
+- 2026-10-22 — resuelto como `unreadOnly` de `list-chats` (M1), sin tool nueva; 🟨 hasta verificar en producción.
 
 ## M3 · `send-text-message`: grupos y cita — Media · ⬜
 

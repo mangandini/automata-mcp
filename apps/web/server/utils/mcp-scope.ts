@@ -212,19 +212,6 @@ export function assertChatAllowed(scope: McpScope, jid: string): void {
 }
 
 /**
- * Filter a chat listing down to scope.
- *
- * Silent, unlike the assertions above — filtering is the honest answer to "what
- * can I see". Refusing the whole listing because one row is out of scope would
- * make a scoped token useless for browsing.
- */
-export function filterChatsToScope<T extends { jid: string }>(scope: McpScope, chats: T[]): T[] {
-  if (scope.allChats) return chats
-  const allowed = new Set(scope.chatJids)
-  return chats.filter(chat => allowed.has(chat.jid))
-}
-
-/**
  * Turn a phone number into the JID Evolution would use for it.
  *
  * **Never normalise JIDs locally.** Evolution's `createJid` carries
