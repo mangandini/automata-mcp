@@ -1,5 +1,27 @@
 > **Antes de explorar código, lee `CODEMAP.md`** (mapa de archivos + recetas). Para despliegue/Coolify/incidentes, lee `OPS.md`. Mejoras de tools MCP: `docs/mcp-roadmap.md`. Luego solo la sección relevante de este archivo.
 
+## Flujo de trabajo (Superpowers) — obligatorio para cambios en este fork
+
+Skills del plugin `superpowers` (se invocan con la herramienta Skill; el usuario puede escribir `/superpowers:<skill>`). Regla base (`using-superpowers`): si hay ≥1 % de probabilidad de que un skill aplique, se invoca **antes** de actuar, se anuncia ("Usando X para Y") y se sigue al pie de la letra; si tiene checklist, una tarea por ítem. Instrucciones del usuario > skills > comportamiento por defecto.
+
+**Ciclo para cada ítem de `docs/mcp-roadmap.md` (o cualquier feature/fix):**
+
+| # | Paso | Skill | Salida / gate |
+|---|---|---|---|
+| 1 | Clasificar y diseñar | `superpowers:brainstorming` | Decir en voz alta el camino: **Spike** (respuesta, sin código que se quede), **Bounded** (cambio acotado sobre flujo existente → diseño corto en el chat, **parar y esperar el "sí"**; sin spec ni plan) o **Architectural** (preguntas → enfoques → diseño por secciones → spec en `docs/superpowers/specs/YYYY-MM-DD-<tema>-design.md`, commit). En duda, el más pesado. Nunca se baja de nivel a mitad. |
+| 2 | Plan (solo Architectural) | `superpowers:writing-plans` | `docs/superpowers/plans/YYYY-MM-DD-<feature>.md`: tareas pequeñas, archivos exactos, sin placeholders. El usuario revisa y elige ejecución: **Subagent-driven** (subagente por tarea + revisor) o **Native** (lo implemento yo + un revisor final). |
+| 3 | Aislar | rama `feat/<id>-<slug>` desde `main` (p. ej. `feat/m1-list-chats`) | Nunca trabajar directo en `main`: **push a `main` = deploy en Coolify**. |
+| 4 | Implementar | `superpowers:executing-plans` (Native) o `superpowers:subagent-driven-development` | Seguir `CODEMAP.md` y las reglas de `CLAUDE.md` › "MCP wiring". |
+| 4b | Tests | `superpowers:test-driven-development` | **Adaptación:** el repo no tiene framework de tests. El "RED/GREEN" se hace con `pnpm typecheck` + llamadas `curl` JSON-RPC al `/mcp` local (ver `docs/mcp-roadmap.md` › "Cómo probar"): primero la llamada que demuestra el fallo/ausencia, luego el cambio, luego la misma llamada pasando. No introducir un framework de tests sin acordarlo. |
+| 5 | Bug o comportamiento raro | `superpowers:systematic-debugging` | Causa raíz antes de proponer arreglo (logs, reproducir, comparar). |
+| 6 | Verificar | `superpowers:verification-before-completion` | Evidencia antes de afirmar: salida de `pnpm typecheck`, respuesta real del tool en local y criterios de aceptación del ítem marcados. Nada de "debería funcionar". |
+| 7 | Revisión | `superpowers:requesting-code-review` (y `superpowers:receiving-code-review` al responderla) | Revisor independiente sobre el diff de la rama. |
+| 8 | Cerrar | `superpowers:finishing-a-development-branch` | Opciones: merge local / push + PR / dejar. **Merge o push a `main` solo con OK explícito del usuario** y respetando `OPS.md` (no durante importaciones de historial; nombre de contenedor consistente en Coolify). Tras el deploy, verificar en producción con los tokens de `.env` y marcar ✅. |
+| 9 | Documentar | — | Actualizar estado + log del ítem en `docs/mcp-roadmap.md`; si cambia la estructura, `CODEMAP.md`; si es operativo, `OPS.md`. |
+
+Otros skills útiles: `superpowers:dispatching-parallel-agents` (≥2 tareas independientes), `superpowers:writing-skills` (crear skills propios).
+
+
 # CLAUDE.md
 
 Guidance for Claude Code (claude.ai/code) working in this repo.
