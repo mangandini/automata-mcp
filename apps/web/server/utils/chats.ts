@@ -134,8 +134,19 @@ const CHAT_LISTING_PAGE = 2000
  */
 const CHAT_LISTING_CAP = 10_000
 
+/**
+ * A listing row. `nameFromId` is internal: true when a group's name fell all the
+ * way through to its bare id, so no subject, chat name or contact name was found.
+ * It never leaves this module — `listChats` and `listChatsPage` strip it.
+ */
+type ChatListingRow = ChatSummary & { nameFromId: boolean }
+
+function publicChat({ nameFromId: _nameFromId, ...chat }: ChatListingRow): ChatSummary {
+  return chat
+}
+
 interface ChatListing {
-  chats: ChatSummary[]
+  chats: ChatListingRow[]
   /**
    * The walk stopped at its cap: the account holds more conversations than this.
    *
@@ -271,20 +282,23 @@ async function buildChatListing(instance: AppInstance): Promise<{ listing: ChatL
     needsGroups ? fetchGroups(instance, evolution) : Promise.resolve(emptyGroups),
   ])
 
-  const chats = drafts.map((draft) => {
+  const chats = drafts.map((draft): ChatListingRow => {
     const contact = contacts.get(draft.jid)
     const group = groups.get(draft.jid)
 
     // A group's subject is authoritative; for a person the saved contact name is
     // what they expect to read. Everything falls through to the bare id, which is
     // still a truthful label — just not a helpful one.
+    const groupName = group?.subject ?? draft.chatName ?? contact?.name
     const name = draft.isGroup
-      ? group?.subject ?? draft.chatName ?? contact?.name ?? draft.localPart
+      ? groupName ?? draft.localPart
       : contact?.name ?? draft.chatName ?? draft.localPart
 
     return {
       jid: draft.jid,
       name,
+      // Only groups: a person's number is a legitimate label, a group's id is not.
+      nameFromId: draft.isGroup && groupName === undefined,
       isGroup: draft.isGroup,
       number: draft.isGroup ? undefined : draft.localPart,
       participantCount: group?.size,
@@ -322,7 +336,7 @@ export async function listChats(instance: AppInstance, query: ChatQuery = {}): P
   }
 
   return {
-    chats: chats.slice(skip, skip + take),
+    chats: chats.slice(skip, skip + take).map(publicChat),
     hasMore: skip + take < chats.length,
   }
 }
@@ -338,9 +352,24 @@ export interface ChatTableQuery {
   limit?: number
   /** 1-based. */
   page?: number
+  /** Narrow to groups or to one-to-one chats. `'all'` or absent: no filter. */
+  type?: 'all' | 'group' | 'direct'
+  /** Only conversations with `unreadCount > 0`. */
+  unreadOnly?: boolean
+  /**
+   * The JIDs a scoped token may see; absent means unrestricted. An empty set is
+   * a restriction that admits nothing, not "no restriction".
+   */
+  allowedJids?: ReadonlySet<string>
 }
 
 export interface ChatTablePage extends ChatPage {
+  /**
+   * Groups with no name of their own (the row shows its bare id) among the
+   * conversations in scope after `type` and `unreadOnly` but **before** `q` —
+   * the ones a search by name could have missed. Not affected by `q`.
+   */
+  unnamedGroups: number
   /** Conversations matching `q`, across the whole listing — not on this page. */
   total: number
   /**
@@ -365,19 +394,31 @@ export interface ChatTablePage extends ChatPage {
  * listing, here rather than in the browser.
  */
 export async function listChatsPage(instance: AppInstance, query: ChatTableQuery = {}): Promise<ChatTablePage> {
-  const { q, sort = 'last', dir = sort === 'last' ? 'desc' : 'asc', limit = 100, page = 1 } = query
+  const { q, sort = 'last', dir = sort === 'last' ? 'desc' : 'asc', limit = 100, page = 1, type, unreadOnly, allowedJids } = query
 
   const { chats, truncated, failed } = await chatListing(instance)
 
-  const matching = chats.filter(chat => matchesSearch(q, chat.name, chat.jid, chat.number))
+  // Scope first, before anything is counted: a count taken ahead of it would
+  // tell a scoped token how many conversations exist beyond what it may see.
+  const inScope = allowedJids ? chats.filter(chat => allowedJids.has(chat.jid)) : chats
+  const ofType = type === 'group' ? inScope.filter(chat => chat.isGroup)
+    : type === 'direct' ? inScope.filter(chat => !chat.isGroup)
+      : inScope
+  const filtered = unreadOnly ? ofType.filter(chat => chat.unreadCount > 0) : ofType
+
+  // Counted before `q`: unnamed groups are the ones a name search can miss.
+  const unnamedGroups = filtered.filter(chat => chat.nameFromId).length
+
+  const matching = filtered.filter(chat => matchesSearch(q, chat.name, chat.jid, chat.number))
 
   const sorted = [...matching].sort(chatComparator(sort, dir))
   const skip = (page - 1) * limit
 
   return {
-    chats: sorted.slice(skip, skip + limit),
+    chats: sorted.slice(skip, skip + limit).map(publicChat),
     hasMore: skip + limit < sorted.length,
     total: sorted.length,
+    unnamedGroups,
     truncated,
     incomplete: failed,
   }
