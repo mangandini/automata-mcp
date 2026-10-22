@@ -34,6 +34,13 @@
 
 ---
 
+### Task 0: Tokens locales (antes de cualquier tarea; lo hace el coordinador, no un subagente)
+
+- [ ] `pnpm services:up:whatsapp` y `pnpm dev` corriendo (`http://localhost:3000`).
+- [ ] En la UI local: una conexión **WhatsApp sin vincular** y una **Postgres** al DSN local (`postgres://…@localhost:5440/…`), un token `all_chats/all_tables/all_tools` en cada una. Si no hay credenciales locales de prueba, las crea el usuario en la UI.
+- [ ] Guardar en `.env` (gitignored) como `LOCAL_WA_TOKEN` y `LOCAL_PG_TOKEN`. Todos los curl locales los leen de ahí: `T=$(grep '^LOCAL_WA_TOKEN=' .env | cut -d= -f2)`; `curl -s http://localhost:3000/mcp -H "Authorization: Bearer $T" …`. Nunca imprimir el token.
+- [ ] **Prohibido** crear sesiones, usuarios o tokens escribiendo directo en la base de datos. Sin token → parar y pedirlo.
+
 ### Task 1: Normalizador de búsqueda
 
 **Files:**
@@ -78,11 +85,13 @@
 - Consumes: `listChatsPage(instance, { q, type, unreadOnly, sort, dir, limit, page, allowedJids })` (Task 2); `useMcpAuth()` → `{ instance, scope }`.
 - Produces (respuesta): `{ count, page, total, hasMore, nextPage?, truncated?, incomplete?, unnamedGroups?, note?, chats }`.
 
-- [ ] **Step 1: RED** — `curl` local `tools/list` con un token WhatsApp local (crear conexión WhatsApp sin vincular + token en `http://localhost:3000`; si el create exige Evolution, levantar `pnpm services:up:whatsapp`): `list-chats` muestra `inputSchema` vacío.
+- [ ] **Step 1: RED** — `curl` local `tools/list` con `LOCAL_WA_TOKEN` (Task 0): `list-chats` muestra `inputSchema` vacío.
 - [ ] **Step 2: Implementar.**
   - `inputSchema`: `query` (string 1–100), `type` (enum, def. `all`), `unreadOnly` (bool), `sort` (`last`|`name`), `page` (int ≥1), `limit` (int 1–200, def. 200). `dir` = `desc` si `last`, `asc` si `name`.
   - `allowedJids`: `scope.allChats ? undefined : new Set(scope.chatJids)`.
-  - `nextPage = page + 1` solo si `hasMore`. `truncated`/`incomplete`/`unnamedGroups` solo cuando true / > 0.
+  - `nextPage = page + 1` solo si `hasMore`.
+  - `incomplete`/`truncated` y su `note` van en **todas** las páginas, incluida una vacía más allá del final (antes `listChats` respondía 503 con `skip > 0` sobre listado fallido; `listChatsPage` no lanza, así que el flag es la única guarda).
+  - En `description`: las páginas recorren una foto que se refresca cada minuto; con `sort:'last'` actividad nueva puede reordenar entre páginas. `truncated`/`incomplete`/`unnamedGroups` solo cuando true / > 0.
   - `note` (una cadena, frases concatenadas según aplique): hay más páginas; listado truncado o incompleto ("it may not contain the chat you want; try search-messages"); `unnamedGroups` > 0 con `query` ("N groups have no name right now because WhatsApp did not answer; a name search can miss them — retry in a minute or use search-messages"); `total === 0` con `query` ("try a shorter fragment or search-messages; do not conclude the chat does not exist").
   - Reescribir comentario de cabecera (el argumento "sin paginación" ya no vale: `chatListing()` cachea 60 s y paginar es cortar en memoria) y `description` (cómo encontrar un grupo por fragmento, qué significan `hasMore`/`truncated`, que `unreadCount` es el último estado que vio la conexión).
 - [ ] **Step 3: GREEN** — `pnpm typecheck`; `tools/list` muestra los 6 argumentos; `tools/call list-chats {}` y `{query:"x", page: 999}` sobre la conexión sin vincular → respuesta con forma válida (`chats: []`, `hasMore:false`, sin `nextPage`), sin 500. `{limit: 500}` → error de validación.
@@ -100,7 +109,7 @@
 
 - [ ] **Step 1: RED** — `tools/list` local no muestra `list-contacts`.
 - [ ] **Step 2: Implementar** opciones en `listContacts` (dashboard no las pasa) y el tool: `query` 1–100, `page` ≥1, `limit` 1–200 def. 100; `excludeGroups: true`; `allowedJids` como en Task 3; proyectar a `{ jid, name, number }`. `note` cuando `total === 0` y no hay `query`: "the contact list came back empty; Evolution may not have answered — this does not mean the account has no contacts". `note` de paginación como en Task 3. Comentario de cabecera: scope opción (a) del usuario, LID vs número falla cerrado, por qué no se toca `contactDirectory`.
-- [ ] **Step 3: GREEN** — `pnpm typecheck`; `tools/list` muestra `list-contacts` en token WhatsApp y **no** en un token Postgres local (crear conexión Postgres al DSN local de `.env` si no existe); `tools/call list-contacts {}` → forma válida con `note` de agenda vacía.
+- [ ] **Step 3: GREEN** — `pnpm typecheck`; `tools/list` muestra `list-contacts` con `LOCAL_WA_TOKEN` y **no** con `LOCAL_PG_TOKEN`; `tools/call list-contacts {}` → forma válida con `note` de agenda vacía.
 - [ ] **Step 4:** Commit `feat(mcp): list-contacts`.
 
 ### Task 5: Instrucciones y documentación
@@ -115,14 +124,15 @@
 
 ### Task 6: Revisión, merge y verificación en producción
 
-- [ ] **Step 1: Revisión de scope (Sonnet).** Lanzar un agente `general-purpose` con `model: sonnet` sobre `git diff main...feat/a-discovery`: buscar cualquier camino por el que `total`, `hasMore`, `count`, `unnamedGroups`, `note` o `chats`/`contacts` revelen algo fuera de `scope.chatJids`; y que `nameFromId` no salga en ninguna respuesta (MCP ni API del dashboard). Aplicar hallazgos válidos (`superpowers:receiving-code-review`).
+- [ ] **Step 1: Revisión de scope (Sonnet).** Lanzar un agente `general-purpose` con `model: sonnet` sobre `git diff main...feat/a-discovery`: buscar cualquier camino por el que `total`, `hasMore`, `count`, `unnamedGroups`, `note` o `chats`/`contacts` revelen algo fuera de `scope.chatJids`; que `nameFromId` no salga en ninguna respuesta (MCP ni API del dashboard); y que `incomplete`/`truncated` + `note` salgan en toda página, incluso vacía. Aplicar hallazgos válidos (`superpowers:receiving-code-review`).
 - [ ] **Step 2: Revisión general** con `superpowers:requesting-code-review` sobre el diff de la rama.
 - [ ] **Step 3: Baseline.** Confirmar que existen `baseline-list-chats-{GT,CH}.txt` en el scratchpad (capturados 2026-10-22 en `main`).
 - [ ] **Step 4: Merge + push a `main`** (`superpowers:finishing-a-development-branch`). Antes, confirmar con el usuario que no hay importación en curso. Seguir el deploy en Coolify (stop-then-start).
 - [ ] **Step 5: Criterios en producción** con `GT_TOKEN` / `CH_TOKEN` de `.env` (sin imprimirlos):
   - `list-chats {}` (ambos): ≤200 filas, misma forma que el baseline, orden por última actividad.
   - CL: `{query:"chk", type:"group"}` → exactamente `PREESCOLAR CHK 2025🏫⭐`; `{query:"preescolar"}` y `{query:"PREÉSCOLAR"}` también lo encuentran.
-  - Paginar con `limit: 100` hasta `hasMore:false`: suma de `count` = `total`.
+  - Paginar con `sort:'name'`, `limit: 100` hasta `hasMore:false`, todo en menos de un minuto: suma de `count` = `total`, sin jids repetidos.
+  - Nota al usuario: respuesta ~88 KB por llamada por `profilePicUrl`; posible recorte futuro (no en este lote).
   - `{unreadOnly:true}` → solo `unreadCount > 0`.
   - `list-contacts {query:"<un nombre del baseline>"}` → contacto con `number`; ninguna fila `@g.us`.
 - [ ] **Step 6:** Pedir al usuario la prueba en Claude.ai ("resume lo de esta semana en el grupo CHK") y anotar si `unreadCount` baja tras leer en el teléfono.
