@@ -67,7 +67,7 @@ Salida:
 - `total` = coincidencias visibles en toda la lista; `count` = filas en esta página.
 - `nextPage` solo si `hasMore`.
 - `truncated` (tope de 10 000 alcanzado) e `incomplete` (Evolution no respondió todo) solo cuando son true, **siempre** acompañados de `note` en palabras: "la lista puede no tener el chat; prueba search-messages".
-- `note` también cuando `query` dio 0 resultados (sugerir fragmento más corto o `search-messages`) y cuando dio >1 con `type: 'group'`... no: la decisión de preguntar al usuario va en las instrucciones, no en la respuesta.
+- `note` también cuando `query` dio 0 resultados (sugerir fragmento más corto o `search-messages`). Qué hacer con varias coincidencias (preguntar al usuario) va en las instrucciones, no en la respuesta.
 - `ChatSummary` sin cambios (incluye `unreadCount`, `lastMessageAt`, `lastMessagePreview`, `participantCount` cuando lo hay).
 
 **Comentario de cabecera:** reescribir. El argumento actual "sin paginación porque nombrar filas cuesta la tabla de contactos por llamada" ya no aplica: `chatListing()` cachea la lista nombrada 60 s, paginar es cortar en memoria.
