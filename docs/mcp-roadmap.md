@@ -18,6 +18,7 @@
 | N3 | `list-unread` (pendientes) | Nuevo | Media | ✅ |
 | M3 | `send-text-message`: enviar a grupos (`jid`) y citar | Mejora | Media | ⬜ |
 | N4 | `get-message-media` (descargar adjuntos) | Nuevo | Baja | ⬜ |
+| M4 | Rechazar argumentos desconocidos en **todos** los tools (global) | Mejora | Baja | ⬜ |
 | X1 | Conector único para varios números | — | — | ⛔ |
 
 ## Lotes de trabajo
@@ -241,6 +242,24 @@ Los tres fallos silenciosos (acentos, número mal formado, argumentos ignorados)
 **Log.**
 - 2026-10-22 — evaluado.
 - 2026-10-22 — caso real en CL (adjunto .xlsx + capturas con el monto buscado); prioridad Baja → Media. Orden de lotes sin cambio (E sigue después de D); reconsiderar adelantarlo si aparecen más casos.
+
+## M4 · Rechazar argumentos desconocidos en todos los tools — Baja · ⬜
+
+**Problema.** Un argumento que el tool no declara se ignora en silencio y la llamada devuelve un resultado normal, como si el filtro hubiera funcionado (medido en `search-messages`: `page:2` y `sender:"x"` → resultado normal, 2026-10-22). Claude puede creer que filtró por algo que no se aplicó.
+
+**Alcance decidido.** El lote B (M2, decisión D5) lo hace **solo** en `search-messages` y `read-messages`. Este ítem es la extensión a los 22 tools (Telegram, IMAP, `sql/`, el resto de WhatsApp). Se separó a propósito: tocar `defineKindTool` cambia el comportamiento de tools que el lote B no prueba.
+
+**Propuesta.** Reutilizar el mecanismo que el lote B deje funcionando (probablemente en `defineKindTool`, `server/utils/mcp-kind-tool.ts`), con un error 400 que nombre el argumento y liste los válidos.
+
+**Cuidados.** Verificar contra el toolkit 0.19.0 (`@nuxtjs/mcp-toolkit`, pinned); re-verificar en cada bump. Probar `tools/list` y una llamada con argumento extra en cada kind. Clientes que envíen campos extra de forma rutinaria dejarían de funcionar: revisar antes con una muestra de llamadas reales.
+
+**Criterios de aceptación.**
+- [ ] Argumento desconocido → error 400 en cada tool de los cuatro kinds.
+- [ ] Llamadas válidas sin cambios (los 22 tools).
+- [ ] `pnpm typecheck` OK.
+
+**Log.**
+- 2026-10-22 — decidido dejarlo fuera del lote B; documentado para no perderlo.
 
 ## X1 · Conector único para varios números — ⛔
 

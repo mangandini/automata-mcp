@@ -128,9 +128,11 @@ Sin pruebas MCP locales (sin WhatsApp local). Local: `pnpm typecheck` y scripts 
 - Respuestas de siempre (sin argumentos nuevos) siguen siendo un superconjunto de las anteriores.
 - Prueba end-to-end en Claude.ai a cargo del usuario.
 
-## Decisión pendiente del usuario
+## Decisiones del usuario
 
-- ¿El rechazo de argumentos desconocidos (D5) debe ser **global** (los 22 tools) o solo los dos de WhatsApp de este lote? Por defecto: solo los dos.
+- Spec aprobada (2026-10-22).
+- Rechazo de argumentos desconocidos (D5): **solo** `search-messages` y `read-messages` en este lote. La versión global (los 22 tools) queda documentada como ítem **M4** del roadmap, para hacerla después.
+- Prueba real del autor en Guatemala (WhatsApp normal vs. Business en Chile): la hará el usuario tras el despliegue; si no funciona, se replantea.
 
 ## Qué se deja al constructor
 
