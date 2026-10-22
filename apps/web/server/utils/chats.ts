@@ -2,7 +2,7 @@ import type { AppInstance } from './app-db'
 import type { EvolutionClient } from './evolution'
 import type { MentionDirectory } from './mentions'
 import { applyMentions, authorName, contactsToDirectory, meaningfulName, mentionDirectory, mentionedJidsOf } from './mentions'
-import type { MessageRecord } from './evolution-db'
+import type { AuthorFilter, MessageRecord } from './evolution-db'
 import { listMessageRecordsAround, listMessagesPage, senderOf } from './evolution-db'
 import { matchesSearch } from './search-text'
 
@@ -476,6 +476,14 @@ export interface MessageQuery {
    * out; see `read-messages`.
    */
   includeReactions?: boolean
+  /**
+   * Several stored forms of one chat, read together (the dedupe collapses copies).
+   * Wins over the `remoteJid` argument for the query; the latter still names the
+   * chat for the name directory.
+   */
+  jids?: string[]
+  /** Only messages by this person, already resolved by `resolveAuthor`. */
+  author?: AuthorFilter
 }
 
 /**
@@ -547,10 +555,12 @@ export async function listMessages(
   remoteJid: string,
   query: MessageQuery = {},
 ): Promise<MessagePage> {
-  const { limit = 50, page = 1, since, until, includeReactions = true } = query
+  const { limit = 50, page = 1, since, until, includeReactions = true, jids, author } = query
 
   const { records, hasMore, total } = await listMessagesPage(instance, {
     jid: remoteJid,
+    ...(jids && { jids }),
+    ...(author && { author }),
     limit,
     page,
     since,

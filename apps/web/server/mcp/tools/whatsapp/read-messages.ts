@@ -1,5 +1,7 @@
 import { z } from 'zod'
+import type { AppInstance } from '~~/server/utils/app-db'
 import type { ChatMessage } from '~~/server/utils/chats'
+import type { ChatTarget } from '~~/server/utils/chat-target'
 
 /**
  * Read tool. Unlike list-chats this refuses loudly when the requested chat is out
@@ -18,10 +20,24 @@ import type { ChatMessage } from '~~/server/utils/chats'
 export default defineKindTool({
   name: 'read-messages',
   kind: 'whatsapp',
+  // Refuse unknown arguments: a misspelled `author` or `around` silently ignored
+  // would read as the plain newest-first page.
+  strictInput: true,
   title: 'Read WhatsApp messages',
   description:
     'Read one page of messages from one WhatsApp conversation, newest first. '
-    + 'Takes the `jid` returned by list-chats. Covers the history imported when '
+    + 'Takes the `jid` returned by list-chats, or a phone number (digits, '
+    + 'optionally with +, spaces or hyphens); every form of that number the '
+    + 'token may read is read together and listed in `chatsRead`. Inside a group, '
+    + '`author` (a name or a number) returns every message that member sent, '
+    + 'media included, and combines with `page`, `since` and `until`. To see a '
+    + 'message in context, pass its id (from search-messages or this tool) as '
+    + '`around`: you get up to `before` messages before it and `after` after it '
+    + '(0-50, default 10 each) in chronological order, the requested one flagged '
+    + '`target: true`, with `hasMoreBefore`/`hasMoreAfter`; the window can hold '
+    + 'fewer readable messages than asked when neighbouring records are control '
+    + 'records (see `protocolMessagesExcluded`). `around` cannot be combined with '
+    + '`page`, `since`, `until` or `author`. Covers the history imported when '
     + 'the account was paired as well as everything since, so older '
     + 'conversations are reachable — use `since`/`until` to target a date range. '
     + 'A response is one page, not the whole range: when `hasMore` is true there '
@@ -56,11 +72,15 @@ export default defineKindTool({
     openWorldHint: true,
   },
   inputSchema: {
-    jid: z.string().min(1).describe('Chat identifier from list-chats, e.g. 5511999999999@s.whatsapp.net'),
+    jid: z.string().min(1).describe('Chat identifier from list-chats, e.g. 5511999999999@s.whatsapp.net, or a phone number'),
     limit: z.number().int().min(1).max(200).default(50).describe('How many messages to return in this page'),
     page: z.number().int().min(1).default(1).describe('1-based page of `limit` messages, counting back from the newest. Walk this up while `hasMore` is true.'),
     since: z.string().optional().describe('Only messages at or after this date, e.g. 2024-03-01 or 2024-03-01T12:00:00Z'),
     until: z.string().optional().describe('Only messages at or before this date. Pass back the `window.until` from a previous page when paging a range.'),
+    author: z.string().optional().describe('Only messages sent by this group member: a name or a phone number. Needs the `jid` of a group. Not compatible with `around`.'),
+    around: z.string().min(1).optional().describe('A message id: return the messages around it instead of a page. Not compatible with `page`, `since`, `until` or `author`.'),
+    before: z.number().int().min(0).max(50).optional().describe('With `around`: messages before the target (default 10).'),
+    after: z.number().int().min(0).max(50).optional().describe('With `around`: messages after the target (default 10).'),
     includeReactions: z.boolean().default(false).describe(
       'Include reaction messages. Each reaction is its own record — an id, an '
       + 'author, a timestamp and an emoji — so in an active group they are a '
@@ -69,10 +89,38 @@ export default defineKindTool({
       + 'reacted is the question.',
     ),
   },
-  handler: async ({ jid, limit, page, since, until, includeReactions }) => {
+  handler: async ({ jid, limit, page, since, until, author, around, before, after, includeReactions }) => {
     const { instance, scope } = useMcpAuth()
 
-    assertChatAllowed(scope, jid)
+    if (around === undefined) {
+      if (before !== undefined || after !== undefined) {
+        throw createError({ statusCode: 400, message: '`before` and `after` only work together with `around`.' })
+      }
+    }
+    else {
+      // `page` defaults to 1, so an explicit `page: 1` is indistinguishable from
+      // omitting it and is harmless; anything above 1 is a real conflict.
+      const clashes = [
+        page > 1 && '`page`',
+        since !== undefined && '`since`',
+        until !== undefined && '`until`',
+        author !== undefined && '`author`',
+      ].filter(Boolean)
+      if (clashes.length) {
+        throw createError({ statusCode: 400, message: `\`around\` cannot be combined with ${clashes.join(', ')}: it returns the messages around one message, not a page of a range.` })
+      }
+    }
+
+    // Scope is checked inside, for every form it returns, before any read.
+    const target = await resolveChatTarget(instance, scope, jid)
+
+    if (around !== undefined) {
+      return await readAround({ instance, target, jid, around, before: before ?? 10, after: after ?? 10, includeReactions })
+    }
+
+    // `resolveChatTarget` has already checked the scope for every jid it returns.
+    const resolution = author ? await resolveAuthor(instance, scope, target.jids[0]!, author) : undefined
+    const chatsRead = target.jids
 
     // Named `range` rather than `window` only to keep the DOM global unshadowed;
     // it goes back to the caller as `window`.
@@ -92,12 +140,38 @@ export default defineKindTool({
     // `includeReactions` is passed alongside `range` rather than folded into it:
     // `range` is echoed back to the caller as `window`, and it should describe
     // the time bounds and nothing else.
+    if (resolution?.kind === 'ambiguous' || resolution?.kind === 'none') {
+      const ambiguous = resolution.kind === 'ambiguous'
+      return {
+        jid,
+        chatsRead,
+        page,
+        limit,
+        count: 0,
+        hasMore: false,
+        ...(isBounded(range) && { window: range }),
+        ...(!includeReactions && { reactionsExcluded: true }),
+        ...(resolution.kind === 'ambiguous' && { authorCandidates: resolution.candidates }),
+        messages: [],
+        note: ambiguous
+          ? `More than one member matches the author "${author}", so nothing was read. Call again with a more specific name or the person's phone number.`
+          : [`No member of this group matches the author "${author}", so nothing was read.`, resolution.note].filter(Boolean).join(' '),
+      }
+    }
+
     const { messages, hasMore, total, protocolMessagesExcluded } = await listMessages(
-      instance, jid, { limit, page, ...range, includeReactions },
+      instance, target.jids[0]!, {
+        limit,
+        page,
+        ...range,
+        includeReactions,
+        jids: target.jids,
+        author: resolution?.filter,
+      },
     )
 
     const covered = coveredSpan(messages)
-    const bounded = Boolean(range.since || range.until)
+    const bounded = isBounded(range)
 
     // One `note` key, assembled from whichever gaps are real — a second
     // note-shaped key would just be a second thing to miss. Byte-identical to
@@ -107,10 +181,15 @@ export default defineKindTool({
         ? incompleteNote({ page, limit, count: messages.length, excluded: protocolMessagesExcluded, range })
         : undefined,
       protocolMessagesExcluded > 0 ? droppedNote(protocolMessagesExcluded) : undefined,
+      !messages.length && target.fromNumber
+        ? 'This number may also have a chat stored under an internal id (@lid) that this connector could not link to it; try list-chats with the person\'s name.'
+        : undefined,
+      resolution?.kind === 'ok' ? resolution.note : undefined,
     ].filter((note): note is string => Boolean(note))
 
     return {
       jid,
+      chatsRead,
       page,
       limit,
       count: messages.length,
@@ -138,10 +217,73 @@ export default defineKindTool({
       // of message is missing, and a caller that does not know it was dropped
       // reads the silence as "nobody reacted".
       ...(!includeReactions && { reactionsExcluded: true }),
+      ...(resolution?.kind === 'ok' && {
+        authorResolved: { names: resolution.names, matchedBy: resolution.matchedBy },
+      }),
       messages,
     }
   },
 })
+
+function isBounded(range: { since?: string, until?: string }): boolean {
+  return Boolean(range.since || range.until)
+}
+
+/**
+ * The `around` branch: one message in context. A number can resolve to several
+ * stored forms of one chat; a message id belongs to one message, so the first
+ * form that holds it is the chat.
+ */
+async function readAround(
+  { instance, target, jid, around, before, after, includeReactions }: {
+    instance: AppInstance
+    target: ChatTarget
+    jid: string
+    around: string
+    before: number
+    after: number
+    includeReactions: boolean
+  },
+) {
+  let found: Awaited<ReturnType<typeof listMessagesAround>> | undefined
+  let chatJid = target.jids[0]!
+  for (const candidate of target.jids) {
+    const result = await listMessagesAround(instance, { jid: candidate, id: around, before, after, includeReactions })
+    if (result.found) {
+      found = result
+      chatJid = candidate
+      break
+    }
+  }
+
+  if (!found) {
+    throw createError({ statusCode: 404, message: 'Message id not found in this chat.' })
+  }
+
+  const dropped = found.protocolMessagesExcluded
+  const notes = [
+    found.targetUnreadable
+      ? 'The requested message exists but is a WhatsApp control record (deletion, timer change, key exchange or similar) with nothing to read, so no message is flagged as the target; the messages around it are returned.'
+      : undefined,
+    `The window may hold fewer than ${before} before / ${after} after readable messages when neighbouring records are control records${dropped > 0 ? ` (${dropped} left out here, counted in protocolMessagesExcluded)` : ''}.`,
+  ].filter((note): note is string => Boolean(note))
+
+  return {
+    jid,
+    chatsRead: [chatJid],
+    around,
+    before,
+    after,
+    count: found.messages.length,
+    hasMoreBefore: found.hasMoreBefore,
+    hasMoreAfter: found.hasMoreAfter,
+    ...(dropped > 0 && { protocolMessagesExcluded: dropped }),
+    ...(found.targetUnreadable && { targetUnreadable: true }),
+    note: notes.join(' '),
+    ...(!includeReactions && { reactionsExcluded: true }),
+    messages: found.messages,
+  }
+}
 
 /**
  * Said in words as well as in a flag. The failure this exists to prevent was a
