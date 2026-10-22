@@ -129,7 +129,7 @@ Añadir un párrafo (sin tocar el resto):
 
 ## Verificación / criterios de aceptación
 
-Local tiene la base y Evolution pero **ninguna cuenta vinculada** (ver OPS.md), así que los curl locales solo prueban la forma, el gating y los errores. La prueba con datos reales es en producción tras el deploy, con los tokens de `.env` (tools de solo lectura). — *pendiente de confirmar con el usuario, ver abajo.*
+Local tiene la base y Evolution pero **ninguna cuenta vinculada** (ver OPS.md), así que los curl locales solo prueban la forma, el gating y los errores. La prueba con datos reales es en producción tras merge + push a `main` (aprobado por el usuario), con los tokens de `.env` (tools de solo lectura).
 
 1. `pnpm typecheck` limpio.
 2. `tools/list` muestra `list-contacts` en un token WhatsApp y no en uno Postgres.
@@ -138,7 +138,7 @@ Local tiene la base y Evolution pero **ninguna cuenta vinculada** (ver OPS.md), 
 5. `page`/`nextPage` recorren hasta `hasMore:false`; la suma de `count` = `total`.
 6. `unreadOnly:true` devuelve solo `unreadCount>0`; anotar si el conteo baja tras leer en el teléfono.
 7. `list-contacts {query:"<nombre conocido>"}` → contacto con número; ninguna fila `@g.us`.
-8. Token con scope de 1–2 chats (creado para la prueba y revocado después): `list-chats` y `list-contacts` devuelven solo esos; `total` no supera el scope.
+8. Scope (sin token temporal en producción, decisión del usuario): un agente revisor en **Sonnet** revisa el diff del filtrado de scope (`list-chats`, `list-contacts`, `unnamedGroups`) antes del merge, buscando fugas por `total`/`hasMore`/conteos.
 9. Pedirle a Claude.ai "resume lo de esta semana en el grupo CHK": encuentra el grupo en una llamada a `list-chats` con `query`.
 
 ## Baseline (producción, `main` @ 9c107ea, 2026-10-22)
