@@ -191,7 +191,7 @@ export function assertTableAllowed(scope: McpScope, qname: string): void {
 
 // ── chats ──────────────────────────────────────────────────────────────────
 
-function isChatAllowed(scope: McpScope, jid: string): boolean {
+export function isChatAllowed(scope: McpScope, jid: string): boolean {
   if (scope.allChats) return true
   return scope.chatJids.includes(jid)
 }

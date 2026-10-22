@@ -392,6 +392,56 @@ export async function searchMessages(
   }
 }
 
+/**
+ * The other `remoteJid` forms the stored history relates to one 1:1 chat.
+ *
+ * Almost half of the 1:1 chats are stored under a `@lid` JID, not the phone
+ * `@s.whatsapp.net` one, and resolving a number only ever yields the phone form.
+ * The one link the data carries is `key.remoteJidAlt`, so this follows it in
+ * both directions: chats whose messages name `jid` as their alternate form, and
+ * the alternate forms named by messages stored under `jid`.
+ *
+ * It can return nothing even when the chat exists under another form:
+ * `remoteJidAlt` is written only by live traffic, never by history sync (see
+ * `MessageKey`). Callers must say so rather than treat an empty answer as "there
+ * is only one form".
+ *
+ * Cost: `"instanceId"` is the only index on `"Message"`, so this scans the
+ * account's rows. That is why it is meant to run once per number-addressed call,
+ * never per page, and why it selects DISTINCT values with a `LIMIT` — a 1:1 chat
+ * has a handful of forms, and an unbounded result would only ever be a bug.
+ */
+export async function relatedChatJids(instance: AppInstance, jid: string): Promise<string[]> {
+  const sql = await evolutionDbFor(instance)
+  const instanceId = await resolveEvolutionInstanceId(instance)
+
+  let rows: Array<{ jid: string | null }>
+  try {
+    rows = await sql<Array<{ jid: string | null }>>`
+      SELECT DISTINCT m.key->>'remoteJid' AS jid
+      FROM "Message" m
+      WHERE m."instanceId" = ${instanceId}
+        AND m.key->>'remoteJidAlt' = ${jid}
+      UNION
+      SELECT DISTINCT m.key->>'remoteJidAlt' AS jid
+      FROM "Message" m
+      WHERE m."instanceId" = ${instanceId}
+        AND m.key->>'remoteJid' = ${jid}
+      LIMIT 20
+    `
+  }
+  catch (error) {
+    console.error('[chat-target] Evolution database query failed:', error)
+    throw createError({
+      statusCode: 503,
+      statusMessage: 'Chat lookup is temporarily unavailable',
+      cause: error,
+    })
+  }
+
+  return [...new Set(rows.map(row => row.jid).filter((value): value is string => Boolean(value) && value !== jid))]
+}
+
 export interface MessagePageOptions {
   /**
    * The one chat to read. A predicate in the SQL, never a filter over rows read.
