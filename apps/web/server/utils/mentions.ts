@@ -180,32 +180,60 @@ export function applyMentions(
 // ── participants ───────────────────────────────────────────────────────────
 
 /**
- * Group membership, keyed by local part.
+ * Group membership, with every identity each member carries.
  *
  * Cached through `staleWhileFailing`, which `fetchGroups` in `chats.ts` also
  * uses and which explains the three behaviours it buys: Evolution answers this
  * from Baileys rather than its database, so it is a live round trip that never
  * returns while the account is disconnected.
  *
- * A participant is indexed under every identity it carries — `id`, `lid`,
- * `phoneNumber`, `jid` — because which one appears in `mentionedJid` depends on
- * the chat's addressing mode, which is WhatsApp's choice and not ours.
+ * `fetchParticipants` indexes a named member under every identity it carries —
+ * `id`, `lid`, `phoneNumber`, `jid` — because which one appears in `mentionedJid`
+ * depends on the chat's addressing mode, which is WhatsApp's choice and not ours.
  */
 const PARTICIPANT_TIMEOUT_MS = 8_000
-const emptyMembers: MentionDirectory = new Map()
 
-const participantCache = staleWhileFailing<MentionDirectory>({
+/**
+ * One member of a group, with every identity it is known by.
+ *
+ * `identities` are the full JIDs as they arrive (`id`, `jid`, `lid`,
+ * `phoneNumber`), never normalised. Members without a readable name are kept:
+ * their value is the LID <-> phone link, which lets an `author` given as a number
+ * be matched to the same person under the other form. Only members with a `name`
+ * take part in matching by name.
+ */
+export interface GroupPerson {
+  name?: string
+  identities: string[]
+}
+
+/**
+ * Answer of the cache when a lookup failed and nothing was cached. Compared by
+ * identity: `staleWhileFailing` can only hand back one shared `empty` value, and
+ * a group that genuinely has no members is a different (fresh) array, so the two
+ * stay distinguishable without changing the cache.
+ */
+const lookupFailed: GroupPerson[] = []
+
+const participantCache = staleWhileFailing<GroupPerson[]>({
   ttlMs: 5 * 60_000,
   retryTtlMs: 60_000,
-  empty: emptyMembers,
+  empty: lookupFailed,
 })
 
-async function fetchParticipants(
+/**
+ * The members of a group, or `undefined` when they could not be asked for.
+ *
+ * `undefined` (failed or timed out, nothing cached to serve) is not "an empty
+ * group" (`[]`): a caller must not read an unanswered lookup as "nobody is in
+ * it". A cached success is still served during a later failure.
+ */
+export async function groupPeople(
   instance: AppInstance,
   evolution: EvolutionClient,
   groupJid: string,
-): Promise<MentionDirectory> {
-  return participantCache(`${instance.id}:${groupJid}`, async () => {
+): Promise<GroupPerson[] | undefined> {
+  const people = await participantCache(`${instance.id}:${groupJid}`, async () => {
     const result = await evolution<EvolutionParticipantsResponse | EvolutionParticipantRow[]>(
       `/group/participants/${encodeURIComponent(instance.name)}?groupJid=${encodeURIComponent(groupJid)}`,
       { timeout: PARTICIPANT_TIMEOUT_MS },
@@ -215,32 +243,52 @@ async function fetchParticipants(
 
     // Reported as a failure, so the cache serves whatever it had — see
     // `staleWhileFailing`. A group whose members simply have no readable names
-    // answers with an empty map instead, and is cached for the full window.
+    // answers with people who have no name instead, cached for the full window.
     if (!Array.isArray(rows)) return undefined
 
-    const members: MentionDirectory = new Map()
+    const people: GroupPerson[] = []
     for (const row of rows) {
       if (!row || typeof row !== 'object') continue
 
-      const identities = [row.id, row.lid, row.phoneNumber, row.jid]
-        .filter((value): value is string => typeof value === 'string' && value.length > 0)
-        .map(localPartOf)
-        .filter(Boolean)
-
-      if (!identities.length) continue
+      const identities = [...new Set(
+        [row.id, row.lid, row.phoneNumber, row.jid]
+          .filter((value): value is string => typeof value === 'string' && value.length > 0),
+      )]
+      if (!identities.some(identity => localPartOf(identity))) continue
 
       // Same rule as `meaningfulName`, widened to every identity the row carries: a
       // participant labelled with any of its own ids has no name, not a numeric one.
+      const localParts = identities.map(localPartOf).filter(Boolean)
       const name = [row.name, row.notify, row.pushName, row.verifiedName]
         .map(candidate => candidate?.trim())
-        .find(candidate => candidate && !identities.includes(candidate))
+        .find(candidate => candidate && localParts.every(localPart => meaningfulName(candidate, localPart)))
 
-      if (!name) continue
-      for (const localPart of identities) members.set(localPart, name)
+      people.push({ name: name || undefined, identities })
     }
 
-    return members
+    return people
   })
+
+  return people === lookupFailed ? undefined : people
+}
+
+/** The mention directory of one group: named people only, under each identity's local part. */
+async function fetchParticipants(
+  instance: AppInstance,
+  evolution: EvolutionClient,
+  groupJid: string,
+): Promise<MentionDirectory> {
+  const members: MentionDirectory = new Map()
+
+  for (const person of await groupPeople(instance, evolution, groupJid) ?? []) {
+    if (!person.name) continue
+    for (const identity of person.identities) {
+      const localPart = localPartOf(identity)
+      if (localPart) members.set(localPart, person.name)
+    }
+  }
+
+  return members
 }
 
 /**
