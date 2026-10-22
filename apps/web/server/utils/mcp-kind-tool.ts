@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import type { ZodRawShape } from 'zod'
 import type { InstanceKind } from './mcp-scope'
 
@@ -84,15 +85,33 @@ export function defineKindTool<
      */
     group?: string
     available?: () => boolean
+    /**
+     * Refuse arguments the schema does not name.
+     *
+     * A plain shape is stripped silently by zod, so a caller who misspells or
+     * invents an argument (`window`, `fromDate`) gets an answer to a question it
+     * did not ask — a search that "ignored" the date it was given reads as a
+     * result over that date. With this on, the MCP SDK answers an `isError`
+     * result whose text names the key (`Unrecognized key: "window"`), and
+     * `tools/list` advertises `additionalProperties: false`.
+     */
+    strictInput?: boolean
   },
 ): ToolDefinition<InputSchema, OutputSchema> {
-  const { kind, group, available, ...rest } = definition
+  const { kind, group, available, strictInput, ...rest } = definition
   const kinds: readonly InstanceKind[] = Array.isArray(kind) ? kind : [kind as InstanceKind]
 
   TOOL_KINDS.set(rest.name, kinds)
 
   return defineMcpTool<InputSchema, OutputSchema>({
     ...rest,
+    // The toolkit types `inputSchema` as a raw shape, but hands it to the MCP
+    // SDK's `registerTool`, which uses an already-built zod object as it is
+    // (verified against SDK 1.30 / zod 4). Passing the strict object through
+    // that type is therefore sound; the cast is only the type system's view.
+    ...(strictInput && rest.inputSchema && {
+      inputSchema: z.strictObject(rest.inputSchema as ZodRawShape) as unknown as InputSchema,
+    }),
     // Inferred from the directory too; stated so a move cannot silently change
     // which connections the tool belongs to. For a single-kind tool the group
     // *is* the kind, which is what every existing tool relies on.
