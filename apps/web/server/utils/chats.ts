@@ -2,7 +2,8 @@ import type { AppInstance } from './app-db'
 import type { EvolutionClient } from './evolution'
 import type { MentionDirectory } from './mentions'
 import { applyMentions, authorName, contactsToDirectory, meaningfulName, mentionDirectory, mentionedJidsOf } from './mentions'
-import { listMessagesPage, senderOf } from './evolution-db'
+import type { MessageRecord } from './evolution-db'
+import { listMessageRecordsAround, listMessagesPage, senderOf } from './evolution-db'
 import { matchesSearch } from './search-text'
 
 /**
@@ -557,6 +558,32 @@ export async function listMessages(
     includeReactions,
   })
 
+  const { messages, protocolMessagesExcluded } = await shapeRecords(instance, remoteJid, records)
+
+  return {
+    messages,
+    // Comes from the query's over-fetch, and is measured on the deduplicated rows
+    // it returned — never on the shaped list. Measuring the list after the control
+    // records were dropped would report a bookkeeping-heavy page as the end of
+    // the conversation. Deliberately not computed from `total` either, exact
+    // though that now is; see `MessagePage`.
+    hasMore,
+    total,
+    protocolMessagesExcluded,
+  }
+}
+
+/**
+ * Turn stored records into messages: classify the payload, drop control records
+ * (counted, not hidden), name authors and resolve @-mentions through one name
+ * directory. Shared by `listMessages` and `listMessagesAround` so a message reads
+ * the same whichever way it was reached.
+ */
+async function shapeRecords(
+  instance: AppInstance,
+  remoteJid: string,
+  records: MessageRecord[],
+): Promise<{ messages: ChatMessage[], protocolMessagesExcluded: number }> {
   // What is in the payload at all, which the SQL cannot ask: see
   // `classifyContent`. The reaction filter has no second layer here — the query
   // reads `message->'reactionMessage'`, which is the payload the old
@@ -602,14 +629,48 @@ export async function listMessages(
       ...(draft.editOf && { editOf: draft.editOf }),
       ...(draft.unreadable && { unreadable: draft.unreadable }),
     })),
-    // Comes from the query's over-fetch, and is measured on the deduplicated rows
-    // it returned — never on `drafts`. Measuring the list after the control
-    // records were dropped would report a bookkeeping-heavy page as the end of
-    // the conversation. Deliberately not computed from `total` either, exact
-    // though that now is; see `MessagePage`.
-    hasMore,
-    total,
     protocolMessagesExcluded,
+  }
+}
+
+/**
+ * The messages around one message of a chat, oldest first, the requested one
+ * flagged `target: true`.
+ *
+ * `evolution-db.ts` finds the neighbours (see `listMessageRecordsAround` there; named differently because Nitro auto-imports both files' exports and a duplicate name makes one silently win); the
+ * shaping is `shapeRecords`, the same as `listMessages`. If the requested message
+ * exists but is a control record, it is not a readable message: the response says
+ * `found: true` with `targetUnreadable: true` and no entry flagged `target`,
+ * rather than dropping it silently — "not found" would be a false statement and
+ * a missing flag with no explanation reads as a bug.
+ */
+export interface MessagesAround {
+  found: boolean
+  messages: Array<ChatMessage & { target?: true }>
+  hasMoreBefore: boolean
+  hasMoreAfter: boolean
+  protocolMessagesExcluded: number
+  targetUnreadable?: true
+}
+
+export async function listMessagesAround(
+  instance: AppInstance,
+  query: { jid: string, id: string, before: number, after: number, includeReactions?: boolean },
+): Promise<MessagesAround> {
+  const { found, records, hasMoreBefore, hasMoreAfter } = await listMessageRecordsAround(instance, query)
+  if (!found) {
+    return { found: false, messages: [], hasMoreBefore: false, hasMoreAfter: false, protocolMessagesExcluded: 0 }
+  }
+
+  const { messages, protocolMessagesExcluded } = await shapeRecords(instance, query.jid, records)
+  const marked: MessagesAround['messages'] = messages.map(message => message.id === query.id ? { ...message, target: true as const } : message)
+  return {
+    found: true,
+    messages: marked,
+    hasMoreBefore,
+    hasMoreAfter,
+    protocolMessagesExcluded,
+    ...(marked.some(message => message.target) ? {} : { targetUnreadable: true as const }),
   }
 }
 

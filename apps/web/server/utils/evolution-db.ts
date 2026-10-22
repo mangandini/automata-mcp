@@ -478,6 +478,13 @@ export interface MessagePageOptions {
    * `instanceId` below is unconditional either way.
    */
   jid?: string
+  /**
+   * Several chats at once — the same `remoteJid = ANY(...)` predicate as
+   * `searchMessages`. If both `jid` and `jids` are given, `jids` wins and `jid` is
+   * ignored. An empty array matches nothing (`= ANY('{}')`), so a caller whose
+   * scope resolved to no chats reads zero rows rather than the whole account.
+   */
+  jids?: string[]
   limit: number
   /** 1-based, counting back from the newest. */
   page: number
@@ -573,7 +580,9 @@ export async function listMessagesPage(
         FROM "Message" m
         ${patterns ? messageBodyJoin(sql) : sql``}
         WHERE m."instanceId" = ${instanceId}
-          ${options.jid === undefined ? sql`` : sql`AND m.key->>'remoteJid' = ${options.jid}`}
+          ${options.jids !== undefined
+            ? sql`AND m.key->>'remoteJid' = ANY(${options.jids}::text[])`
+            : options.jid === undefined ? sql`` : sql`AND m.key->>'remoteJid' = ${options.jid}`}
           ${patterns === undefined ? sql`` : sql`AND (t.body IS NOT NULL OR t.filename IS NOT NULL) AND ${searchableText(sql)} ILIKE ALL (${patterns}::text[])`}
           ${since === undefined ? sql`` : sql`AND m."messageTimestamp" >= ${since}`}
           ${until === undefined ? sql`` : sql`AND m."messageTimestamp" <= ${until}`}
@@ -611,6 +620,108 @@ export async function listMessagesPage(
     total: Number.isFinite(total) ? total : undefined,
   }
 }
+
+/**
+ * The messages around one message, in one chat, in chronological order.
+ *
+ * The anchor is looked up by `key->>'id'` **inside the given `remoteJid`**: the
+ * caller's scope was checked against that chat, and a message id alone could be a
+ * message in a chat the token never reached. Not found there is not found.
+ *
+ * Neighbours are taken on the pair `("messageTimestamp", key->>'id')`, the same
+ * ordering `listMessagesPage` uses, compared as a row: "before" is strictly less
+ * than the anchor's pair, "after" strictly greater. Timestamps are whole seconds,
+ * so several messages share one — comparing the timestamp alone would drop or
+ * repeat the ones tied with the anchor. Each window reads the deduplicated set
+ * (`DISTINCT ON` in the CTE, same `bestNamed`), so a duplicate copy never uses up
+ * a slot, and over-fetches one row to answer `hasMore*` without a count.
+ */
+export async function listMessageRecordsAround(
+  instance: AppInstance,
+  params: { jid: string, id: string, before: number, after: number, includeReactions?: boolean },
+): Promise<{ found: boolean, records: MessageRecord[], hasMoreBefore: boolean, hasMoreAfter: boolean }> {
+  const sql = await evolutionDbFor(instance)
+  const instanceId = await resolveEvolutionInstanceId(instance)
+
+  // `LIMIT 0 + 1` still answers "is there anything on that side".
+  const beforeTake = params.before + 1
+  const afterTake = params.after + 1
+  // Applied to the neighbours only, never to the anchor: the caller named that
+  // message, and a reaction they were pointed at should not turn into "not found".
+  const noReactions = params.includeReactions ? sql`` : sql`AND d.message->'reactionMessage' IS NULL`
+
+  let rows: AroundRow[]
+  try {
+    rows = await sql<AroundRow[]>`
+      WITH deduped AS (
+        SELECT DISTINCT ON (m.key->>'id')
+               m.key, m."pushName", m."messageType", m."messageTimestamp", m.message,
+               m."contextInfo"->'mentionedJid' AS mentioned,
+               ${bestNamed(sql)} AS named, m.id AS "rowId"
+        FROM "Message" m
+        WHERE m."instanceId" = ${instanceId}
+          AND m.key->>'remoteJid' = ${params.jid}
+        ORDER BY m.key->>'id', named DESC, m."messageTimestamp" DESC, "rowId"
+      ),
+      anchor AS (
+        SELECT * FROM deduped WHERE key->>'id' = ${params.id}
+      ),
+      older AS (
+        SELECT d.* FROM deduped d, anchor a
+        WHERE (d."messageTimestamp", d.key->>'id') < (a."messageTimestamp", a.key->>'id')
+          ${noReactions}
+        ORDER BY d."messageTimestamp" DESC, d.key->>'id' DESC
+        LIMIT ${beforeTake}
+      ),
+      newer AS (
+        SELECT d.* FROM deduped d, anchor a
+        WHERE (d."messageTimestamp", d.key->>'id') > (a."messageTimestamp", a.key->>'id')
+          ${noReactions}
+        ORDER BY d."messageTimestamp" ASC, d.key->>'id' ASC
+        LIMIT ${afterTake}
+      )
+      SELECT 'older' AS side, ROW_NUMBER() OVER (ORDER BY "messageTimestamp" DESC, key->>'id' DESC) AS rank,
+             key, "pushName", "messageType", "messageTimestamp", message, mentioned FROM older
+      UNION ALL
+      SELECT 'anchor', 0, key, "pushName", "messageType", "messageTimestamp", message, mentioned FROM anchor
+      UNION ALL
+      SELECT 'newer', ROW_NUMBER() OVER (ORDER BY "messageTimestamp" ASC, key->>'id' ASC),
+             key, "pushName", "messageType", "messageTimestamp", message, mentioned FROM newer
+    `
+  }
+  catch (error) {
+    console.error('[read] Evolution database query failed:', error)
+    throw createError({
+      statusCode: 503,
+      statusMessage: 'Reading messages is temporarily unavailable',
+      cause: error,
+    })
+  }
+
+  const strip = ({ side: _side, rank: _rank, ...record }: AroundRow): MessageRecord => record
+  const anchorRow = rows.find(row => row.side === 'anchor')
+  if (!anchorRow) return { found: false, records: [], hasMoreBefore: false, hasMoreAfter: false }
+
+  // `rank` is the SQL's own order within each window (nearest the anchor first),
+  // so the tie-break between rows sharing a timestamp is Postgres's, not a second
+  // comparison in JS that could disagree under the database's collation.
+  const byRank = (a: AroundRow, b: AroundRow) => Number(a.rank) - Number(b.rank)
+  const older = rows.filter(row => row.side === 'older').sort(byRank)
+  const newer = rows.filter(row => row.side === 'newer').sort(byRank)
+
+  return {
+    found: true,
+    records: [
+      ...older.slice(0, params.before).reverse().map(strip),
+      strip(anchorRow),
+      ...newer.slice(0, params.after).map(strip),
+    ],
+    hasMoreBefore: older.length > params.before,
+    hasMoreAfter: newer.length > params.after,
+  }
+}
+
+interface AroundRow extends MessageRecord { side: 'older' | 'anchor' | 'newer', rank: number | string }
 
 /**
  * The readable text of a message, as a `CROSS JOIN LATERAL ... AS t` yielding
