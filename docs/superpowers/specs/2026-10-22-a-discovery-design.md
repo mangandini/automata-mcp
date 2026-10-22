@@ -132,9 +132,13 @@ Local tiene la base y Evolution pero **ninguna cuenta vinculada** (ver OPS.md), 
 1. `pnpm typecheck` limpio.
 2. `tools/list` muestra `list-contacts` en un token WhatsApp y no en uno Postgres.
 3. Sin argumentos, `list-chats` devuelve ≤200 filas con la misma forma que antes, ordenadas por última actividad (baseline de `main` guardado antes del deploy para comparar).
-4. GT: `list-chats {query:"chk", type:"group"}` → exactamente el grupo `PREESCOLAR CHK 2025🏫⭐`. `query:"preescolar"` igual con acentos/mayúsculas variados.
+4. CL (token `CH_TOKEN`): `list-chats {query:"chk", type:"group"}` → exactamente el grupo `PREESCOLAR CHK 2025🏫⭐`. `query:"preescolar"` igual con acentos/mayúsculas variados.
 5. `page`/`nextPage` recorren hasta `hasMore:false`; la suma de `count` = `total`.
 6. `unreadOnly:true` devuelve solo `unreadCount>0`; anotar si el conteo baja tras leer en el teléfono.
 7. `list-contacts {query:"<nombre conocido>"}` → contacto con número; ninguna fila `@g.us`.
 8. Token con scope de 1–2 chats (creado para la prueba y revocado después): `list-chats` y `list-contacts` devuelven solo esos; `total` no supera el scope.
 9. Pedirle a Claude.ai "resume lo de esta semana en el grupo CHK": encuentra el grupo en una llamada a `list-chats` con `query`.
+
+## Baseline (producción, `main` @ 9c107ea, 2026-10-22)
+
+`list-chats` sin argumentos: GT 200 filas, `hasMore:true`, 34 grupos, 1,6 s; CL 200 filas, `hasMore:true`, 17 grupos, **8,1 s** (lista fría). `PREESCOLAR CHK 2025🏫⭐` está en CL. Ningún grupo nombrado por id en ese momento. Respuesta ~88 KB por llamada (incluye `profilePicUrl` largas). Guardado en el scratchpad de la sesión.
