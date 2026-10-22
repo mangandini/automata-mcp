@@ -183,16 +183,30 @@ Hallazgos de la prueba real (2026-10-22, ambos tokens contra producción):
 **Log.**
 - 2026-10-22 — evaluado.
 
-## N4 · `get-message-media` — Baja · ⬜
+## N4 · `get-message-media` — Media · ⬜
 
-**Propuesta.** Descargar el adjunto de un mensaje (`[image]`, audio, documento) por id → base64 o resumen.
+**Problema (caso real, 2026-10-22, conexión CL).** Un monto que el usuario necesitaba no estaba escrito en ningún mensaje: estaba en un documento adjunto (`[document] ….xlsx`, mensaje de 2026-05-14) y en capturas `[image]` de transferencias (2026-05-19) de un chat 1:1. Con los tools actuales solo se ve el nombre del archivo y el id; no hay forma de bajarlo por MCP. Los adjuntos son a menudo donde está el dato (cotizaciones, comprobantes, circulares del colegio).
 
-**Base existente.** Evolution `POST /chat/getBase64FromMediaMessage/{instance}`.
+**Propuesta.** Tool de lectura `get-message-media { messageId }` → bloques `image` / `resource` vía `content: [...]`, mismo patrón que `imap/get-email-attachment.ts`.
 
-**Cuidados.** Tamaño de respuesta MCP; privacidad (datos sensibles); posible límite de tamaño configurable como en IMAP (`NUXT_IMAP_ATTACHMENT_MAX_BYTES`). Considerar hacerlo opt-in por scope de tools.
+**Base existente.** Evolution `POST /chat/getBase64FromMediaMessage/{instance}` con el `key.id`; `get-email-attachment` (bloques de contenido, tope de tamaño).
+
+**Cuidados.**
+- `assertChatAllowed` sobre el chat **del mensaje** (leer `remoteJid` de la fila antes de descargar), no sobre un argumento.
+- Tope configurable tipo `NUXT_IMAP_ATTACHMENT_MAX_BYTES`; rechazar por tamaño declarado antes de descargar y re-verificar en bytes.
+- Opt-in por scope de tools (privacidad).
+- Medios antiguos pueden haber **expirado** en los servidores de WhatsApp: error explícito y honesto, nunca respuesta vacía.
+- No hacer descargas puntuales fuera del MCP con la API key de la instancia (alternativa evaluada y descartada).
+
+**Criterios de aceptación.**
+- CL: descargar el `.xlsx` del mensaje de 2026-05-14 del caso anterior y devolverlo como `resource`.
+- Medio expirado → error explícito que lo dice.
+- Mensaje de un chat fuera del scope del token → rechazado igual que `read-messages`.
+- Medio sobre el tope → rechazado antes de descargar.
 
 **Log.**
 - 2026-10-22 — evaluado.
+- 2026-10-22 — caso real en CL (adjunto .xlsx + capturas con el monto buscado); prioridad Baja → Media. Orden de lotes sin cambio (E sigue después de D); reconsiderar adelantarlo si aparecen más casos.
 
 ## X1 · Conector único para varios números — ⛔
 
