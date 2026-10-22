@@ -32,7 +32,7 @@
 
 ### Reglas de operación
 
-1. **Nunca dos contenedores a la vez sobre `/data`.** Coolify hace *rolling update* en Restart/Redeploy (arranca el nuevo antes de parar el viejo) → dos Postgres sobre la misma carpeta → corrupción. Para reiniciar: **Stop → esperar → Start**. Pendiente: activar *Consistent Container Name* / *Custom Container Name* en Configuration → Advanced (según docs de Coolify, fuerza stop-then-start) y verificar en el próximo deploy con `docker ps | grep lu4fo3` que nunca hay dos.
+1. **Nunca dos contenedores a la vez sobre `/data`.** Coolify hace *rolling update* en Restart/Redeploy (arranca el nuevo antes de parar el viejo) → dos Postgres sobre la misma carpeta → corrupción. Para reiniciar: **Stop → esperar → Start**. *Consistent Container Name* activado (2026-10-22; según docs de Coolify fuerza stop-then-start). Verificar en el próximo deploy con `docker ps | grep lu4fo3` que nunca hay dos.
 2. No Restart / Redeploy / push mientras se importa historial (esperar `progress: 100%` en el último lote `type: 2` de los logs `recv … msgs`).
 3. Escanear cada QR **una sola vez**; WhatsApp limita intentos de vinculación (esperar 15–30 min si falla varias veces).
 
@@ -105,7 +105,7 @@ Puertos internos del contenedor: web 3000, Postgres 127.0.0.1:5432, Redis 6379, 
 
 ## Pendientes
 
-- [ ] Activar nombre de contenedor consistente en Coolify y verificar que deploy = stop-then-start.
+- [x] Activar nombre de contenedor consistente en Coolify (2026-10-22). Pendiente: verificar en el próximo deploy con `docker ps | grep lu4fo3` que nunca hay dos.
 - [x] Conectar Guatemala (69.561 mensajes).
 - [ ] Crear token por conexión y añadir 2 custom connectors en Claude.ai.
 - [ ] Borrar `/data/postgres.bak-1629` cuando esté estable.
