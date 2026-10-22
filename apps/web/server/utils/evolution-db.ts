@@ -2,6 +2,7 @@ import type { Sql } from 'postgres'
 import postgres from 'postgres'
 import type { AppInstance } from './app-db'
 import { mentionedJidsOf } from './mentions'
+import { foldForSearch, SQL_FOLD_FROM, SQL_FOLD_TO } from './search-text'
 
 /**
  * Read-only access to Evolution's own Postgres — every message this app reads.
@@ -265,7 +266,7 @@ export async function searchMessages(
   const sql = await evolutionDbFor(instance)
   const instanceId = await resolveEvolutionInstanceId(instance)
 
-  const patterns = options.terms.map(term => `%${escapeLike(term)}%`)
+  const patterns = options.terms.map(term => `%${escapeLike(foldForSearch(term))}%`)
   const since = toUnixSeconds(options.since, 'since')
   const until = toUnixSeconds(options.until, 'until')
 
@@ -295,7 +296,7 @@ export async function searchMessages(
     rows = await sql<MessageRow[]>`
       WITH matched AS (
         SELECT DISTINCT ON (m.key->>'id')
-               m.key, m."pushName", m."messageType", m."messageTimestamp", t.body,
+               m.key, m."pushName", m."messageType", m."messageTimestamp", t.body, t.filename,
                m."contextInfo"->'mentionedJid' AS mentioned,
                -- Which message this one edits, when it is an edit. Not decoration:
                -- without it a search can return both the stale original and its
@@ -310,8 +311,8 @@ export async function searchMessages(
         FROM "Message" m
         ${messageBodyJoin(sql)}
         WHERE m."instanceId" = ${instanceId}
-          AND t.body IS NOT NULL
-          AND t.body ILIKE ALL (${patterns}::text[])
+          AND (t.body IS NOT NULL OR t.filename IS NOT NULL)
+          AND ${searchableText(sql)} ILIKE ALL (${patterns}::text[])
           ${options.jid ? sql`AND m.key->>'remoteJid' = ${options.jid}` : sql``}
           ${options.allowedJids ? sql`AND m.key->>'remoteJid' = ANY(${options.allowedJids}::text[])` : sql``}
           ${since === undefined ? sql`` : sql`AND m."messageTimestamp" >= ${since}`}
@@ -330,7 +331,7 @@ export async function searchMessages(
                OR m.message->'protocolMessage'->'editedMessage' IS NOT NULL)
         ORDER BY m.key->>'id', named DESC, m."messageTimestamp" DESC, "rowId"
       )
-      SELECT key, "pushName", "messageType", "messageTimestamp", body, mentioned, "editOf"
+      SELECT key, "pushName", "messageType", "messageTimestamp", body, filename, mentioned, "editOf"
       FROM matched
       ORDER BY "messageTimestamp" DESC, key->>'id' DESC
       LIMIT ${take}
@@ -357,7 +358,9 @@ export async function searchMessages(
         ? new Date(Number(row.messageTimestamp) * 1000).toISOString()
         : undefined,
       type: row.messageType ?? undefined,
-      text: row.body,
+      // A document sent without a caption has no body; its file name is what
+      // matched, so it is also what the hit shows.
+      text: row.body ?? row.filename ?? '',
       mentioned: mentionedJidsOf(row.mentioned),
       ...(row.editOf && { editOf: row.editOf }),
     })),
@@ -449,7 +452,7 @@ export async function listMessagesPage(
   // Joined only when there is something to match, so an ordinary read pays
   // nothing for it. The body expression is shared with `searchMessages`.
   const terms = options.terms?.length ? options.terms : undefined
-  const patterns = terms?.map(term => `%${escapeLike(term)}%`)
+  const patterns = terms?.map(term => `%${escapeLike(foldForSearch(term))}%`)
 
   // The tiebreaker travels with the direction. Evolution's own ordering has
   // none, and rows sharing a timestamp then land on two pages or on neither —
@@ -470,7 +473,7 @@ export async function listMessagesPage(
         ${patterns ? messageBodyJoin(sql) : sql``}
         WHERE m."instanceId" = ${instanceId}
           ${options.jid === undefined ? sql`` : sql`AND m.key->>'remoteJid' = ${options.jid}`}
-          ${patterns === undefined ? sql`` : sql`AND t.body ILIKE ALL (${patterns}::text[])`}
+          ${patterns === undefined ? sql`` : sql`AND ${searchableText(sql)} ILIKE ALL (${patterns}::text[])`}
           ${since === undefined ? sql`` : sql`AND m."messageTimestamp" >= ${since}`}
           ${until === undefined ? sql`` : sql`AND m."messageTimestamp" <= ${until}`}
           ${options.includeReactions ? sql`` : sql`AND m.message->'reactionMessage' IS NULL`}
@@ -561,8 +564,44 @@ function messageBodyJoin(sql: Sql) {
         -- so an ordinary text row still stops at the first arm — the extra
         -- lookups are paid only by rows that produce no body at all, which
         -- this scan already touches and discards.
-      ) AS body
+      ) AS body,
+      -- The file name of a document, so "contrato.pdf" is findable although the
+      -- document has no caption. fileName first, title as the fallback some
+      -- clients fill instead. Explicit paths only, for the reason above; the
+      -- same wrappers as the body arms.
+      COALESCE(
+        m.message->'documentMessage'->>'fileName',
+        m.message->'documentMessage'->>'title',
+        m.message->'documentWithCaptionMessage'->'message'->'documentMessage'->>'fileName',
+        m.message->'documentWithCaptionMessage'->'message'->'documentMessage'->>'title',
+        m.message->'associatedChildMessage'->'message'->'documentMessage'->>'fileName',
+        m.message->'associatedChildMessage'->'message'->'documentMessage'->>'title',
+        m.message->'protocolMessage'->'editedMessage'->'documentMessage'->>'fileName',
+        m.message->'protocolMessage'->'editedMessage'->'documentMessage'->>'title',
+        m.message->'associatedChildMessage'->'message'->'protocolMessage'->'editedMessage'->'documentMessage'->>'fileName',
+        m.message->'associatedChildMessage'->'message'->'protocolMessage'->'editedMessage'->'documentMessage'->>'title'
+      ) AS filename
     ) t`
+}
+
+/**
+ * Accent-folds `expr` in SQL with the same table `foldForSearch` applies in JS,
+ * passed as bind parameters. It does not lowercase: ASCII capitals are not in
+ * the table, so the comparison stays `ILIKE` against needles already folded in
+ * JS. Module-level so other columns (a sender's `pushName`) fold identically.
+ */
+function fold(sql: Sql, expr: ReturnType<Sql>) {
+  return sql`translate(${expr}, ${SQL_FOLD_FROM}, ${SQL_FOLD_TO})`
+}
+
+/**
+ * What a search matches against: the body and the document's file name, folded.
+ * Built on `messageBodyJoin`'s `t`, so it is only valid where that join is.
+ * `concat_ws` skips NULLs, so a captionless document is matched by its name
+ * alone and a plain text message by its body alone.
+ */
+function searchableText(sql: Sql) {
+  return fold(sql, sql`concat_ws(' ', t.body, t.filename)`)
 }
 
 /**
@@ -630,7 +669,9 @@ interface MessageRow {
   messageType: string | null
   /** Unix seconds, not milliseconds — the column is an Int. */
   messageTimestamp: number | null
-  body: string
+  body: string | null
+  /** File name of a document message, null for anything else. */
+  filename: string | null
   /**
    * `contextInfo.mentionedJid`, or null where the message mentions nobody.
    *
