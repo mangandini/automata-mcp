@@ -305,7 +305,7 @@ export async function searchMessages(
     // type instead, with `message.reactionMessage` sitting right there. The
     // payload is the authority. It costs nothing next to the scan already
     // happening — `@@index([instanceId])` is the only index on
-    // `Message`. None of it touches scope: `instanceId`, `jid` and `allowedJids`
+    // `Message`. None of it touches scope: `instanceId`, `jids` and `allowedJids`
     // still bound the query, so an included reaction is only ever one from a
     // chat this token already reaches.
     rows = await sql<MessageRow[]>`

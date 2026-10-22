@@ -486,7 +486,7 @@ export interface MessageQuery {
  * for, while keeping the part they would have got without asking. A page that
  * does not say it is a page reads as a complete answer, and a summary written
  * from it has a hole in it. `searchMessages` in `evolution-db.ts` carries a
- * `truncated` flag for the same reason.
+ * `hasMore` flag for the same reason.
  */
 export interface MessagePage {
   messages: ChatMessage[]
