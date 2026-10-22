@@ -85,10 +85,11 @@ export default defineKindTool({
     if (!terms.length && !author) {
       throw createError({ statusCode: 400, message: '`query` needs at least one word to search for, unless `author` is given.' })
     }
+    // Counted in UTF-16 units on purpose, as the old `min(2)` was: a bare emoji is two units and must stay searchable.
     // Too short to be a useful needle, or nothing left once accents and marks are
     // folded away (a lone combining mark): either would match nearly everything.
     for (const term of terms) {
-      if ([...term].length < 2 || !foldForSearch(term).trim()) {
+      if (term.length < 2 || !foldForSearch(term).trim()) {
         throw createError({
           statusCode: 400,
           message: `The search word "${term}" is too short: every word needs at least 2 letters or digits.`,
@@ -107,7 +108,7 @@ export default defineKindTool({
     // Pinned to now when the caller gave none, and echoed back as `window`, so
     // the next page is read from the same range rather than one that moved.
     const untilIso = toIsoDate(until, 'until') ?? new Date().toISOString()
-    const window = { ...(sinceIso && { since: sinceIso }), until: untilIso }
+    const range = { ...(sinceIso && { since: sinceIso }), until: untilIso }
 
     const target = jid ? await resolveChatTarget(instance, scope, jid) : undefined
 
@@ -121,7 +122,7 @@ export default defineKindTool({
       query: query ?? '',
       page,
       ...(target && { chatsSearched: target.jids }),
-      window,
+      window: range,
       ...(!includeReactions && { reactionsExcluded: true }),
     }
 
