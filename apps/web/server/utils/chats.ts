@@ -3,6 +3,7 @@ import type { EvolutionClient } from './evolution'
 import type { MentionDirectory } from './mentions'
 import { applyMentions, authorName, contactsToDirectory, meaningfulName, mentionDirectory, mentionedJidsOf } from './mentions'
 import { listMessagesPage, senderOf } from './evolution-db'
+import { matchesSearch } from './search-text'
 
 /**
  * Reading conversations out of Evolution.
@@ -368,14 +369,7 @@ export async function listChatsPage(instance: AppInstance, query: ChatTableQuery
 
   const { chats, truncated, failed } = await chatListing(instance)
 
-  const needle = q?.trim().toLowerCase()
-  const matching = needle
-    ? chats.filter(chat =>
-        chat.name.toLowerCase().includes(needle)
-        || chat.jid.toLowerCase().includes(needle)
-        || (chat.number?.toLowerCase().includes(needle) ?? false),
-      )
-    : chats
+  const matching = chats.filter(chat => matchesSearch(q, chat.name, chat.jid, chat.number))
 
   const sorted = [...matching].sort(chatComparator(sort, dir))
   const skip = (page - 1) * limit
@@ -868,14 +862,7 @@ export async function listContacts(
     }
   })
 
-  const needle = q?.trim().toLowerCase()
-  const matching = needle
-    ? rows.filter(row =>
-        row.name.toLowerCase().includes(needle)
-        || row.jid.toLowerCase().includes(needle)
-        || (row.number?.includes(needle) ?? false),
-      )
-    : rows
+  const matching = rows.filter(row => matchesSearch(q, row.name, row.jid, row.number))
 
   const sign = dir === 'asc' ? 1 : -1
   const byName = (a: ContactSummary, b: ContactSummary) => a.name.localeCompare(b.name)
