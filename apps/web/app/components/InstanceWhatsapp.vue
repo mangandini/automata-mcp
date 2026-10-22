@@ -117,6 +117,9 @@ const { pause: pauseQrPoll, resume: resumeQrPoll } = useIntervalFn(async () => {
       // Refreshed rather than recorded, so the page does not flip to connected on
       // this poll's word and back again while the status fetch catches up.
       await refresh()
+      // Hand the state back to the status fetch. Left set, the last pairing-time
+      // state (`connecting`) outranks `data.state` and the page never leaves pairing.
+      polledState.value = null
       return
     }
     polledState.value = result.state

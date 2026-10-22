@@ -819,11 +819,25 @@ export async function deleteInstance(instance: AppInstance): Promise<void> {
       )
     }
     else {
+      const evolution = createEvolutionClient(creds)
+      const name = encodeURIComponent(instance.name)
+      const remove = async () => {
+        try {
+          await evolution(`/instance/delete/${name}`, { method: 'DELETE' })
+        } catch (error) {
+          // A 404 means Evolution has already lost it; carry on and clean up our row.
+          if (httpStatusOf(error) !== 404) throw error
+        }
+      }
       try {
-        await createEvolutionClient(creds)(`/instance/delete/${encodeURIComponent(instance.name)}`, { method: 'DELETE' })
+        await remove()
       } catch (error) {
-        // A 404 means Evolution has already lost it; carry on and clean up our row.
-        if (httpStatusOf(error) !== 404) throw error
+        // 2.3.7 answers 400 deleting a live session: it logs the socket out but
+        // refuses the delete in the same call. A second attempt, after an
+        // explicit logout (400 when already out — ignored), goes through.
+        if (httpStatusOf(error) !== 400) throw error
+        await evolution(`/instance/logout/${name}`, { method: 'DELETE' }).catch(() => {})
+        await remove()
       }
     }
   }

@@ -1,3 +1,5 @@
+> **Antes de explorar código, lee `CODEMAP.md`** (mapa de archivos + recetas). Luego solo la sección relevante de este archivo.
+
 # CLAUDE.md
 
 Guidance for Claude Code (claude.ai/code) working in this repo.
