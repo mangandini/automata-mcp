@@ -20,6 +20,25 @@
 | N4 | `get-message-media` (descargar adjuntos) | Nuevo | Baja | ⬜ |
 | X1 | Conector único para varios números | — | — | ⛔ |
 
+## Lotes de trabajo
+
+Cada lote = **un** ciclo Superpowers (brainstorming → … → cierre, ver `CLAUDE.md`) y una rama `feat/<lote>-<slug>`. Agrupados por archivos tocados y riesgo, no por prioridad.
+
+| Lote | Ítems | Rama | Nivel | Motivo |
+|---|---|---|---|---|
+| **A · Descubrimiento** | M1 + N3 + N1 | `feat/a-discovery` | Architectural (spec + plan cortos) | Mismo código (`utils/chats.ts`, `contactDirectory()`), misma decisión de scope, un solo rediseño de `WHATSAPP_INSTRUCTIONS`. N3 se resuelve como `unreadOnly` de M1. Solo lectura. |
+| **B · Búsqueda** | M2 | `feat/b-search-paging` | Bounded | SQL delicado en `evolution-db.ts` (dedupe `DISTINCT ON` + `LIMIT/OFFSET`); revisión aislada. |
+| **C · Grupos** | N2 | `feat/c-group-info` | Bounded | Evolution en vivo (socket, `rate-overlimit`/428); riesgo distinto, no comparte archivos. |
+| **D · Envío** | M3 | `feat/d-send-groups` | Bounded + revisión estricta | Única escritura (envía a terceros); prueba real en grupo propio. |
+| **E · Adjuntos** | N4 | `feat/e-media` | Architectural | Requiere decidir opt-in por scope, tope de tamaño y privacidad. |
+
+**Orden:** A → B → C → D → E.
+
+**Ejecución:**
+- Dentro de A, tareas **secuenciales** (comparten `chats.ts` y `mcp-instructions.ts`; subagentes en paralelo chocarían).
+- B y C son independientes, pero se hacen uno a uno.
+- Se pueden **agrupar deploys**: mergear varios lotes en local y hacer un solo push a `main` (cada push = deploy en Coolify; minimizar mientras no esté activo el nombre de contenedor consistente, ver `OPS.md`).
+
 ## Estado actual de los tools (2026-10-22)
 
 Archivos en `apps/web/server/mcp/tools/whatsapp/`. Todos se definen con `defineKindTool` (kind `whatsapp`), van filtrados por el scope del token y no reciben argumento de conexión.
@@ -196,3 +215,4 @@ curl -s https://wa.royale.ventures/mcp \
 ## Log general
 
 - 2026-10-22 — Evaluación inicial; documento creado.
+- 2026-10-22 — Ítems agrupados en lotes A–E (ver "Lotes de trabajo").
