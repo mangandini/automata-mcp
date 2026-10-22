@@ -27,7 +27,7 @@
 - Build pack **Dockerfile**, base dir `/`, Dockerfile `/docker/aio/Dockerfile` (imagen todo-en-uno: web + Postgres 16 + Redis + Evolution v2.3.7 + telegram bridge, supervisados por s6).
 - Puerto expuesto `3000`. Volumen persistente montado en **`/data`** (postgres, redis, evolution/instances, secrets).
 - Variables: `NUXT_PUBLIC_APP_URL=https://wa.royale.ventures`, `SIGNUP=invite-only`, `SIGNUP_CODE=<secreto>`. Sin SMTP (verificación de email off).
-- Contenedor: nombre `lu4fo3urqukvul49q6qxnmzs-<timestamp>` (cambia por deploy salvo que se active nombre consistente).
+- Contenedor: nombre fijo `lu4fo3urqukvul49q6qxnmzs` (Consistent Container Name activo → deploy = stop-then-start, ~10 s de caída).
 - Usuario admin: `oscar@royalestudios.com`.
 
 ### Reglas de operación
@@ -105,7 +105,7 @@ Puertos internos del contenedor: web 3000, Postgres 127.0.0.1:5432, Redis 6379, 
 
 ## Pendientes
 
-- [x] Activar nombre de contenedor consistente en Coolify (2026-10-22). Pendiente: verificar en el próximo deploy con `docker ps | grep lu4fo3` que nunca hay dos.
+- [x] Activar nombre de contenedor consistente en Coolify (2026-10-22). Verificado en el deploy de `9c107ea`: log "rolling update is not supported", stop+rm del viejo y luego start del nuevo (nombre fijo `lu4fo3urqukvul49q6qxnmzs`).
 - [x] Conectar Guatemala (69.561 mensajes).
 - [ ] Crear token por conexión y añadir 2 custom connectors en Claude.ai.
 - [ ] Borrar `/data/postgres.bak-1629` cuando esté estable.
