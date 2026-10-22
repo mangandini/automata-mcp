@@ -401,6 +401,10 @@ export async function searchMessages(
  * both directions: chats whose messages name `jid` as their alternate form, and
  * the alternate forms named by messages stored under `jid`.
  *
+ * Only 1:1 forms (`@s.whatsapp.net`, `@lid`) are returned, filtered in the SQL so
+ * `LIMIT` counts valid forms: a group, broadcast or newsletter value must never
+ * become a "form" of someone's chat.
+ *
  * It can return nothing even when the chat exists under another form:
  * `remoteJidAlt` is written only by live traffic, never by history sync (see
  * `MessageKey`). Callers must say so rather than treat an empty answer as "there
@@ -422,11 +426,13 @@ export async function relatedChatJids(instance: AppInstance, jid: string): Promi
       FROM "Message" m
       WHERE m."instanceId" = ${instanceId}
         AND m.key->>'remoteJidAlt' = ${jid}
+        AND (m.key->>'remoteJid' LIKE '%@s.whatsapp.net' OR m.key->>'remoteJid' LIKE '%@lid')
       UNION
       SELECT DISTINCT m.key->>'remoteJidAlt' AS jid
       FROM "Message" m
       WHERE m."instanceId" = ${instanceId}
         AND m.key->>'remoteJid' = ${jid}
+        AND (m.key->>'remoteJidAlt' LIKE '%@s.whatsapp.net' OR m.key->>'remoteJidAlt' LIKE '%@lid')
       LIMIT 20
     `
   }
