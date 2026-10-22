@@ -199,6 +199,22 @@ export async function resolveEvolutionInstanceId(instance: AppInstance): Promise
   return id
 }
 
+/**
+ * Who sent the messages to keep, as resolved by `resolveAuthor` in
+ * `author-filter.ts` — never as typed by a caller.
+ *
+ * `identities` are **local parts** (`localPartOf`), not JIDs: the same person is
+ * `…@lid` in one copy of a message and `…@s.whatsapp.net` in another, and
+ * comparing the part before the `@` is what `authorName` already does for its
+ * directory. It also means this module builds and compares no JID form, which the
+ * repo forbids doing locally. `pushName` (already folded) is the fallback and is
+ * read only when `identities` is empty. A filter with neither matches nothing.
+ */
+export interface AuthorFilter {
+  identities: string[]
+  pushName?: string
+}
+
 export interface MessageSearchOptions {
   /**
    * Words to find in the message text. Already split, not yet escaped. May be
@@ -218,6 +234,8 @@ export interface MessageSearchOptions {
   since?: string
   until?: string
   fromMe?: boolean
+  /** Only messages sent by this person; see `AuthorFilter`. Never matches `fromMe` rows. */
+  author?: AuthorFilter
   /**
    * Match reaction messages too.
    *
@@ -337,6 +355,7 @@ export async function searchMessages(
           ${since === undefined ? sql`` : sql`AND m."messageTimestamp" >= ${since}`}
           ${until === undefined ? sql`` : sql`AND m."messageTimestamp" <= ${until}`}
           ${options.fromMe === undefined ? sql`` : sql`AND (m.key->>'fromMe')::boolean = ${options.fromMe}`}
+          ${authorPredicate(sql, options.author)}
           ${options.includeReactions ? sql`` : sql`AND m.message->'reactionMessage' IS NULL`}
           -- Control records are excluded by intent, not only by accident. Today
           -- this is a no-op: no arm above reads anything out of a non-edit
@@ -465,6 +484,8 @@ export interface MessagePageOptions {
   since?: string
   until?: string
   includeReactions?: boolean
+  /** Only messages sent by this person; see `AuthorFilter`. Never matches `fromMe` rows. */
+  author?: AuthorFilter
   /**
    * Every term must appear in the message body. Already split, not yet escaped —
    * matched against the same `messageBodyJoin` expression `searchMessages` uses,
@@ -556,6 +577,7 @@ export async function listMessagesPage(
           ${patterns === undefined ? sql`` : sql`AND (t.body IS NOT NULL OR t.filename IS NOT NULL) AND ${searchableText(sql)} ILIKE ALL (${patterns}::text[])`}
           ${since === undefined ? sql`` : sql`AND m."messageTimestamp" >= ${since}`}
           ${until === undefined ? sql`` : sql`AND m."messageTimestamp" <= ${until}`}
+          ${authorPredicate(sql, options.author)}
           ${options.includeReactions ? sql`` : sql`AND m.message->'reactionMessage' IS NULL`}
         ORDER BY m.key->>'id', named DESC, m."messageTimestamp" DESC, "rowId"
       )
@@ -663,6 +685,94 @@ function messageBodyJoin(sql: Sql) {
         m.message->'associatedChildMessage'->'message'->'protocolMessage'->'editedMessage'->'documentMessage'->>'title'
       ) AS filename
     ) t`
+}
+
+/**
+ * The author predicate, as a `WHERE` fragment (`AND …`) that sits before the
+ * dedupe so it bounds the scan like every other filter.
+ *
+ * Copies of one message disagree on `pushName` but carry the same `key`, so the
+ * identity arm is stable across them: the predicate neither duplicates a message
+ * nor loses it. That is why identity is the primary arm and `pushName` only a
+ * fallback — matching a name alone would merge two people who share one.
+ *
+ * `fromMe = false` is required by both arms: a message you sent has no author
+ * (`authorName`), so it can never be "what X said". The `::boolean` cast of a
+ * missing `fromMe` is NULL, which excludes the row — fail closed.
+ *
+ * An empty filter yields `AND false`, never nothing: a resolver bug must not turn
+ * "messages from this person" into "every message". Every value is a bind
+ * parameter; the needle is folded and LIKE-escaped before it is bound.
+ */
+function authorPredicate(sql: Sql, author: AuthorFilter | undefined) {
+  if (!author) return sql``
+
+  const identities = [...new Set(author.identities.filter(identity => identity.length > 0))]
+  if (identities.length) {
+    return sql`AND (m.key->>'fromMe')::boolean = false
+          AND (split_part(m.key->>'participant', '@', 1) = ANY(${identities}::text[])
+               OR split_part(m.key->>'participantAlt', '@', 1) = ANY(${identities}::text[]))`
+  }
+
+  const name = author.pushName ? foldForSearch(author.pushName).trim() : ''
+  if (name) {
+    return sql`AND (m.key->>'fromMe')::boolean = false
+          AND ${fold(sql, sql`m."pushName"`)} ILIKE ${`%${escapeLike(name)}%`}`
+  }
+
+  return sql`AND false`
+}
+
+/**
+ * The distinct (identity, `pushName`) pairs that posted under a name containing
+ * `foldedName` in one chat, for `resolveAuthor` to tell one person from two when
+ * the participant list could not.
+ *
+ * Group members are mostly not saved contacts, so what they publish as their own
+ * name is often the only name there is. `identity` is the local part of
+ * `participant` and of `participantAlt` — one message can yield two pairs — and the
+ * caller groups by folded name, so one person seen as both a LID and a phone number
+ * is one candidate, not two. Scoped to the one chat by `jid` (an argument the caller
+ * has already authorised), `fromMe = false`, capped at 20: enough to see that a
+ * name is ambiguous, not a roster. The order is fixed so the cap cuts the same
+ * rows on every call.
+ */
+export async function distinctSenders(
+  instance: AppInstance,
+  params: { jid: string, foldedName: string },
+): Promise<Array<{ identity: string, pushName: string }>> {
+  const sql = await evolutionDbFor(instance)
+  const instanceId = await resolveEvolutionInstanceId(instance)
+
+  const needle = foldForSearch(params.foldedName).trim()
+  if (!needle) return []
+
+  try {
+    const rows = await sql<Array<{ identity: string, pushName: string }>>`
+      SELECT DISTINCT i.identity AS identity, m."pushName" AS "pushName"
+      FROM "Message" m
+      CROSS JOIN LATERAL (VALUES
+        (split_part(m.key->>'participant', '@', 1)),
+        (split_part(m.key->>'participantAlt', '@', 1))
+      ) AS i(identity)
+      WHERE m."instanceId" = ${instanceId}
+        AND m.key->>'remoteJid' = ${params.jid}
+        AND (m.key->>'fromMe')::boolean = false
+        AND i.identity <> ''
+        AND ${fold(sql, sql`m."pushName"`)} ILIKE ${`%${escapeLike(needle)}%`}
+      ORDER BY m."pushName", i.identity
+      LIMIT 20
+    `
+    return rows.map(row => ({ identity: row.identity, pushName: row.pushName }))
+  }
+  catch (error) {
+    console.error('[search] Evolution database sender lookup failed:', error)
+    throw createError({
+      statusCode: 503,
+      statusMessage: 'Reading messages is temporarily unavailable',
+      cause: error,
+    })
+  }
 }
 
 /**
