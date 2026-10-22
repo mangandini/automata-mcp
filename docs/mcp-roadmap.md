@@ -31,8 +31,9 @@ Cada lote = **un** ciclo Superpowers (brainstorming → … → cierre, ver `CLA
 | **C · Grupos** | N2 | `feat/c-group-info` | Bounded | Evolution en vivo (socket, `rate-overlimit`/428); riesgo distinto, no comparte archivos. |
 | **D · Envío** | M3 | `feat/d-send-groups` | Bounded + revisión estricta | Única escritura (envía a terceros); prueba real en grupo propio. |
 | **E · Adjuntos** | N4 | `feat/e-media` | Architectural | Requiere decidir opt-in por scope, tope de tamaño y privacidad. |
+| **F · Rendimiento del panel** | P1 | `feat/f-dashboard-perf` | Bounded (medir primero) | No es MCP: tablas del dashboard. Separado de A para no mezclar riesgos. |
 
-**Orden:** A → B → C → D → E.
+**Orden:** A → B → C → D → E; F cuando se decida (independiente).
 
 **Ejecución:**
 - Dentro de A, tareas **secuenciales** (comparten `chats.ts` y `mcp-instructions.ts`; subagentes en paralelo chocarían).
@@ -216,3 +217,17 @@ curl -s https://wa.royale.ventures/mcp \
 
 - 2026-10-22 — Evaluación inicial; documento creado.
 - 2026-10-22 — Ítems agrupados en lotes A–E (ver "Lotes de trabajo").
+
+## P1 · Dashboard: Messages/Chats lentos — Media · ⬜
+
+**Medido (2026-10-22, navegador, conexión GT ~69k mensajes).** `GET /api/instances/:id/messages?page=1&limit=100`: **9,4 s** en frío (TTFB), **1,1–1,3 s** en caliente (base `GET /api/instances/:id` ≈ 330 ms). `limit=10` cuesta lo mismo que 100; `page=300` 1,5 s; `q=hola` 2,3 s. Render del frontend 14 ms → no es el cliente.
+
+**Hipótesis (sin verificar en servidor).**
+- Frío: `accountNames()` → `contactDirectory()` (tabla de contactos completa, caché 5 min) + `fetchGroups()` en vivo contra WhatsApp (muchos grupos, `rate-overlimit`).
+- Caliente: `listMessagesPage()` sin `jid` = `DISTINCT ON` + `COUNT(*) OVER ()` sobre todo el `Message` de la cuenta; único índice `@@index([instanceId])`.
+- Menor: al cerrar el modal se vuelve a pedir `GET /api/instances/:id`; además el panel hace poll cada 15 s.
+
+**Siguiente paso.** `Server-Timing` por paso (auth, SQL, nombres) + `EXPLAIN (ANALYZE, BUFFERS)`; luego decidir (caché de grupos, `total` solo en página 1, índice propio en `public."Message"` — ojo: es tabla de Evolution, re-verificar en bump de tag).
+
+**Log.**
+- 2026-10-22 — medido Messages; pendiente medir Chats (frío/caliente/búsqueda).
