@@ -7,8 +7,8 @@
 ## Uso previsto
 
 - Dos números de WhatsApp en un solo teléfono, ambos como conexiones separadas:
-  - **Chile** `+56 9 3536 7655` — app WhatsApp **Business** (no es negocio; se usa para tener 2 números). ~36k mensajes.
-  - **Guatemala** — app WhatsApp normal. ~5× más mensajes (~180k). *Pendiente de conectar (2026-10-22).*
+  - **Chile** `+56 9 3536 7655` — app WhatsApp **Business** (no es negocio; se usa para tener 2 números). 36.363 mensajes (2023-01-06 → hoy).
+  - **Guatemala** — app WhatsApp normal. Conectada 2026-10-22: 69.561 mensajes importados (2023-09-04 → hoy) de ~180k estimados; WhatsApp limita el historial que entrega al vincular.
 - Un token MCP por conexión → un *custom connector* en Claude.ai por número.
 - El código ya soporta N conexiones WhatsApp por organización; no hubo que desarrollar nada.
 
@@ -106,7 +106,7 @@ Puertos internos del contenedor: web 3000, Postgres 127.0.0.1:5432, Redis 6379, 
 ## Pendientes
 
 - [ ] Activar nombre de contenedor consistente en Coolify y verificar que deploy = stop-then-start.
-- [ ] Conectar Guatemala (WhatsApp normal) y esperar historial completo.
+- [x] Conectar Guatemala (69.561 mensajes).
 - [ ] Crear token por conexión y añadir 2 custom connectors en Claude.ai.
 - [ ] Borrar `/data/postgres.bak-1629` cuando esté estable.
 - [ ] Opcional: SMTP para alertas de desconexión; backups periódicos de `/data` (p. ej. `pg_dump` programado).
