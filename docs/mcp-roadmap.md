@@ -13,7 +13,7 @@
 |---|---|---|---|---|
 | M1 | `list-chats`: búsqueda, filtro grupo/directo, paginación | Mejora | Alta | ✅ |
 | N1 | `list-contacts` | Nuevo | Alta | ✅ |
-| M2 | `search-messages`: paginación + filtro por autor | Mejora | Media | ⬜ |
+| M2 | `search-messages`: búsqueda completa (acentos, OR, número, páginas, autor, archivos, contexto) | Mejora | Alta | ⬜ |
 | N2 | `get-group-info` (participantes, admins, descripción) | Nuevo | Media | ⬜ |
 | N3 | `list-unread` (pendientes) | Nuevo | Media | ✅ |
 | M3 | `send-text-message`: enviar a grupos (`jid`) y citar | Mejora | Media | ⬜ |
@@ -27,7 +27,7 @@ Cada lote = **un** ciclo Superpowers (brainstorming → … → cierre, ver `CLA
 | Lote | Ítems | Rama | Nivel | Motivo |
 |---|---|---|---|---|
 | **A · Descubrimiento** | M1 + N3 + N1 | `feat/a-discovery` | Architectural (spec + plan cortos) | Mismo código (`utils/chats.ts`, `contactDirectory()`), misma decisión de scope, un solo rediseño de `WHATSAPP_INSTRUCTIONS`. N3 se resuelve como `unreadOnly` de M1. Solo lectura. |
-| **B · Búsqueda** | M2 | `feat/b-search-paging` | Bounded | SQL delicado en `evolution-db.ts` (dedupe `DISTINCT ON` + `LIMIT/OFFSET`); revisión aislada. |
+| **B · Búsqueda** | M2 | `feat/b-search` | Architectural (spec + plan) | Búsqueda completa: acentos, OR, número, paginación, autor por nombre, archivos, contexto. SQL delicado en `evolution-db.ts` (dedupe `DISTINCT ON` + `LIMIT/OFFSET`). |
 | **C · Grupos** | N2 | `feat/c-group-info` | Bounded | Evolution en vivo (socket, `rate-overlimit`/428); riesgo distinto, no comparte archivos. |
 | **D · Envío** | M3 | `feat/d-send-groups` | Bounded + revisión estricta | Única escritura (envía a terceros); prueba real en grupo propio. |
 | **E · Adjuntos** | N4 | `feat/e-media` | Architectural | Requiere decidir opt-in por scope, tope de tamaño y privacidad. |
@@ -124,23 +124,53 @@ Hallazgos de la prueba real (2026-10-22, ambos tokens contra producción):
 - 2026-10-22 — evaluado.
 - 2026-10-22 — implementado en `feat/a-discovery` (🟨 hasta verificar en producción): `list-contacts { query, page, limit }`.
 
-## M2 · `search-messages`: paginación y autor — Media · ⬜
+## M2 · `search-messages`: búsqueda completa (lote B) — Alta · ⬜
 
-**Problema.** Máximo 100 coincidencias sin forma de seguir; no se puede filtrar "lo que dijo X en el grupo Y".
+**Medido en producción (2026-10-22, búsquedas reales de solo lectura en GT/CL + código).**
 
-**Propuesta.** `page?: number`; `sender?: string` (jid o número del autor, resuelto con Evolution, no normalizado localmente). Devolver `hasMore` (de `limit+1`) y `nextPage`.
+| Comportamiento hoy | Evidencia |
+|---|---|
+| No pliega acentos (sí mayúsculas) | Chat CL: "fogón" 1, "fogon" 0. Cuenta CL: "fogón" 7 / "fogon" 1, 0 en común; "mañana" ≥100 / "manana" 27, 1 en común. `evolution-db.ts:314` (`ILIKE ALL`, sin unaccent) |
+| Exige todas las palabras (AND) | "fogón costo" 0, "fogón" 1, "costo" 2 |
+| `jid` = igualdad exacta de cadena | `…@s.whatsapp.net` 1; `+569…`, `569…`, `…@c.us` → **0 sin error** |
+| Tope 100, sin paginación | "hola" → 100 + `truncated:true`; claves: query, matches, count, truncated, reactionsExcluded (sin hasMore/total/nextPage) |
+| Argumentos desconocidos ignorados en silencio | `page:2`, `sender:"x"` → resultado normal |
+| No busca en nombre de archivo | COALESCE `evolution-db.ts:520-558`: texto y captions; sin `documentMessage.fileName`/`title`. "xlsx" 0 |
+| Sin filtro por autor | Solo `fromMe`; cada resultado sí trae `author` |
+| Sin contexto alrededor de un resultado | `read-messages`: solo `since/until/page`, nada "alrededor del mensaje X" |
+| Latencia en frío 7,7 s (CL) / 11,9 s (GT); caliente 0,8–2 s | llamadas (frío → lote F) |
 
-**Base existente.** `searchMessages()` en `utils/evolution-db.ts` (SQL con `DISTINCT ON (key->>'id')`, `COALESCE` de rutas explícitas). El autor en grupos está en `key->>'participant'` (o variantes `@lid`); revisar `senderOf()`.
+Los tres fallos silenciosos (acentos, número mal formado, argumentos ignorados) hacen que Claude responda "no hay nada" con seguridad cuando sí lo hay. Caso real que lo destapó: "costo del fogón" en un chat 1:1 de CL (encontrado solo porque se pasaron ambas grafías y el jid completo).
 
-**Cuidados.** Mantener el dedupe dentro del CTE con `LIMIT/OFFSET` fuera; nada de `$.**` en jsonpath; orden estable `messageTimestamp DESC, key->>'id' DESC`.
+**Alcance acordado (corregir todas las filas).**
+- `search-messages`:
+  - Insensible a acentos y mayúsculas (mismo criterio que `list-chats`), resuelto en el SQL de solo lectura; nada se instala en la BD de Evolution.
+  - AND por defecto + opción "cualquiera de estas palabras".
+  - Chat por número en cualquier forma, resuelto con Evolution (`resolveNumberToJid`, nunca normalizar local); chat no encontrado → se dice, no "0 resultados".
+  - Paginación: `page`, `hasMore` (de `limit+1`), `nextPage`, total; dedupe `DISTINCT ON` dentro del CTE con `LIMIT/OFFSET` fuera; orden `messageTimestamp DESC, key->>'id' DESC`.
+  - Argumentos desconocidos → error, no silencio.
+  - Buscar también en nombre/título de documento (rutas explícitas, nada de `$.**`).
+  - Filtro por autor (ver decisión abajo).
+- `read-messages`: contexto alrededor de un mensaje (N antes y después de un id).
+- Fuera: lentitud en frío (lote F), descargar el archivo (lote E).
+
+**Decisión del usuario — autor por nombre, no por agenda.** "Lo que dijo Juan en el grupo X" debe buscar los mensajes de esa persona en ese grupo. Un usuario real **no guarda como contacto** a los miembros de un grupo (lo agregan a grupos de ~100 personas y no chatea con ellos), así que el filtro **no puede depender de `contactDirectory()`**. El nombre debe salir de lo que el propio grupo muestra: el nombre que cada miembro publica en sus mensajes (`pushName`) y los participantes del grupo; el número/jid/LID del autor también debe aceptarse. Varias personas que coinciden (dos "Juan") → devolver los candidatos y que el modelo pregunte, no mezclar.
+
+**Pendiente de diseño (spec).** Cómo emparejar nombre ↔ autor cuando el autor viene como LID; qué hacer si `pushName` varía entre copias del mismo mensaje (ver dedupe/`bestNamed()`); N por defecto del contexto (propuesta ~10 a cada lado).
 
 **Criterios de aceptación.**
-- [ ] Búsqueda con >100 resultados recorrible por páginas sin duplicados ni huecos.
-- [ ] `sender` filtra correctamente en un grupo.
+- [ ] CL chat del caso: "fogon" encuentra el mensaje de "fogón".
+- [ ] `jid`/número `+56…`, `56…` y jid completo dan el mismo resultado; número inexistente → mensaje explícito.
+- [ ] Búsqueda con >100 resultados recorrible por páginas sin duplicados ni huecos (suma = total).
+- [ ] Autor por nombre en un grupo, con un miembro que no está en contactos.
+- [ ] "xlsx" encuentra el documento del caso N4 por su nombre.
+- [ ] Contexto alrededor de un resultado devuelve los mensajes previos/siguientes del mismo chat.
+- [ ] Argumento desconocido → error.
 - [ ] `pnpm typecheck` OK.
 
 **Log.**
 - 2026-10-22 — evaluado.
+- 2026-10-22 — medido en producción (tabla arriba); alcance ampliado de "paginación y autor" a búsqueda completa; nivel Bounded → Architectural; decisión de autor por nombre sin depender de contactos.
 
 ## N2 · `get-group-info` — Media · ⬜
 
