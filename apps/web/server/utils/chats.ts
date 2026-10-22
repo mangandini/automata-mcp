@@ -858,6 +858,15 @@ export interface ContactTableQuery {
   limit?: number
   /** 1-based. */
   page?: number
+  /** Drop group JIDs. Applied before search, ordering and the page cut. */
+  excludeGroups?: boolean
+  /**
+   * Chat scope as a predicate on the listing itself: only these JIDs exist for
+   * the caller, so `total`/`hasMore` never count what it may not see. Matched
+   * exactly against the contact JID — a LID contact never matches a phone-number
+   * scope entry, which fails closed.
+   */
+  allowedJids?: ReadonlySet<string>
 }
 
 export interface ContactTablePage {
@@ -884,7 +893,7 @@ export async function listContacts(
   instance: AppInstance,
   query: ContactTableQuery = {},
 ): Promise<ContactTablePage> {
-  const { q, sort = 'name', dir = 'asc', limit = 100, page = 1 } = query
+  const { q, sort = 'name', dir = 'asc', limit = 100, page = 1, excludeGroups, allowedJids } = query
 
   const evolution = evolutionClientForInstance(instance)
   const contacts = await contactDirectory(instance, evolution)
@@ -903,7 +912,10 @@ export async function listContacts(
     }
   })
 
-  const matching = rows.filter(row => matchesSearch(q, row.name, row.jid, row.number))
+  const visible = rows.filter(row =>
+    !(excludeGroups && row.isGroup) && (!allowedJids || allowedJids.has(row.jid)),
+  )
+  const matching = visible.filter(row => matchesSearch(q, row.name, row.jid, row.number))
 
   const sign = dir === 'asc' ? 1 : -1
   const byName = (a: ContactSummary, b: ContactSummary) => a.name.localeCompare(b.name)
