@@ -1,62 +1,109 @@
+import { z } from 'zod'
+
 /**
- * Read tool. Chat scope is applied by filtering rather than refusing — a listing
- * is the honest answer to "what can I see", so a scoped token sees its own
- * conversations and simply does not learn the others exist.
+ * Read tool. Chat scope is applied inside the listing (`allowedJids`), not by
+ * filtering a page afterwards: a scoped token sees its own conversations and
+ * simply does not learn the others exist, and `total`/`hasMore` describe only
+ * what it may see.
  *
- * **This answers with one page, and says so.** `listChats` returns a `ChatPage`
- * whose `hasMore` means "the page came back full", and dropping it here left the
- * only read tool that presents a page as a complete listing — the exact gap
- * `read-messages` and `list-tables` both carry an envelope to close. A model
- * told nothing concludes these are all the conversations there are.
+ * **This answers with one page, and says so.** `hasMore` means "there is another
+ * page of what the listing holds"; presenting a page as the complete list makes a
+ * model conclude those are all the conversations there are.
  *
- * No page-size or offset argument, though, and that is not an omission: naming
- * the rows costs Evolution's entire contact table per call (see `listChats`), so
- * walking a small `skip` is far more expensive than one large page. The page
- * size stays this server's decision.
+ * Paging is cheap now: `listChatsPage` cuts a listing that `chatListing()` walks
+ * once and caches for 60 seconds, so a page is a slice in memory, not a call to
+ * Evolution. The flip side is that pages come off a snapshot, which is why
+ * `truncated` and `incomplete` ride on every page, including an empty one past
+ * the end — `listChatsPage` never throws on a failed walk, so the flag is the only
+ * thing telling the caller a short listing is short.
  */
 export default defineKindTool({
   name: 'list-chats',
   kind: 'whatsapp',
   title: 'List WhatsApp chats',
   description:
-    'List recent WhatsApp conversations, most recently active first, with the '
-    + '`jid` needed by read-messages. Includes conversations imported from the '
-    + 'phone when the account was paired, not only ones active since. If this '
-    + 'connector is scoped to specific chats, only those are listed. This '
-    + 'answers with one page, most recently active first: when `hasMore` is true '
-    + 'there are older conversations it did not include, so do not report the '
-    + 'list as complete or conclude that a chat does not exist — search-messages '
-    + 'finds a conversation by what was said in it.',
+    'List WhatsApp conversations with the `jid` needed by read-messages, '
+    + 'including ones imported from the phone when the account was paired. To '
+    + 'find a group or contact by name, pass `query`: a fragment of the name or '
+    + 'number, matched ignoring case and accents ("sao paulo" finds "São Paulo"). '
+    + 'Narrow with `type` (group or direct) and `unreadOnly`; order by most recent '
+    + 'activity (`sort: "last"`, the default) or by name. If this connector is '
+    + 'scoped to specific chats, only those are listed. An answer is one page: '
+    + 'when `hasMore` is true, call again with `nextPage` and the same arguments '
+    + 'before treating the list as complete. Pages are cut from a snapshot of the '
+    + 'chat list that refreshes every minute, so with `sort: "last"` new activity '
+    + 'can reorder chats between pages — a chat may repeat or be skipped, which '
+    + 'is why you should collect by `jid`. `truncated` (the account holds more '
+    + 'chats than the listing will) and `incomplete` (WhatsApp could not be asked '
+    + 'for all of them) appear only when true, and then the list may not contain '
+    + 'the chat you want; `unnamedGroups` appears only when above zero, counting '
+    + 'groups with no name right now, which a name search can miss. `unreadCount` '
+    + 'is the last state this connection saw, not a live read of the phone. '
+    + 'search-messages finds a conversation by what was said in it.',
   annotations: {
     readOnlyHint: true,
     destructiveHint: false,
     idempotentHint: true,
     openWorldHint: true,
   },
-  inputSchema: {},
-  handler: async () => {
+  inputSchema: {
+    query: z.string().min(1).max(100).optional().describe(
+      'Fragment of a chat name or number to look for, e.g. "familia" or "5511". '
+      + 'Ignores case and accents. Omit to list everything.',
+    ),
+    type: z.enum(['all', 'group', 'direct']).default('all').describe('Only group chats, only one-to-one chats, or both'),
+    unreadOnly: z.boolean().optional().describe('Only conversations with unread messages'),
+    sort: z.enum(['last', 'name']).default('last').describe('`last`: most recently active first. `name`: alphabetical.'),
+    page: z.number().int().min(1).default(1).describe('1-based page of `limit` chats. Walk this up while `hasMore` is true.'),
+    limit: z.number().int().min(1).max(200).default(200).describe('How many chats to return in this page'),
+  },
+  handler: async ({ query, type, unreadOnly, sort, page, limit }) => {
     const { instance, scope } = useMcpAuth()
 
-    // Fetches a page and filters. A scoped token with chats far down a very long
-    // list could miss some; raise the page size here if that becomes real.
-    const { chats, hasMore } = await listChats(instance)
-    const visible = filterChatsToScope(scope, chats)
+    const result = await listChatsPage(instance, {
+      q: query,
+      type,
+      unreadOnly,
+      sort,
+      dir: sort === 'last' ? 'desc' : 'asc',
+      limit,
+      page,
+      // Scope is a predicate inside the listing, before anything is counted.
+      allowedJids: scope.allChats ? undefined : new Set(scope.chatJids),
+    })
+
+    const { chats, hasMore, total, truncated, incomplete, unnamedGroups } = result
+
+    // One `note`, assembled from whichever gaps are real.
+    const notes = [
+      hasMore
+        ? `This page holds chats ${(page - 1) * limit + 1}-${(page - 1) * limit + chats.length} of ${total} matching; call list-chats again with page: ${page + 1} and the same arguments. Do not tell the user these are all their chats until hasMore is false.`
+        : undefined,
+      truncated || incomplete
+        ? 'The chat list is '
+          + [truncated && 'truncated (the account holds more chats than the listing will)', incomplete && 'incomplete (WhatsApp could not be asked for all of them)']
+            .filter(Boolean).join(' and ')
+          + ', so it may not contain the chat you want; try search-messages.'
+        : undefined,
+      unnamedGroups > 0 && query
+        ? `${unnamedGroups} group${unnamedGroups === 1 ? ' has' : 's have'} no name right now because WhatsApp did not answer; a name search can miss them — retry in a minute or use search-messages.`
+        : undefined,
+      total === 0 && query
+        ? 'No chat matched. Try a shorter fragment or search-messages; do not conclude the chat does not exist.'
+        : undefined,
+    ].filter((note): note is string => Boolean(note))
 
     return {
-      // `count` is what survived scope; `hasMore` is about the page underneath
-      // it, so a scoped token can legitimately see few chats and still be told
-      // there are more. Wrong only in the safe direction, as everywhere else: a
-      // page that came back exactly full reports true and costs nothing but a
-      // sentence.
-      count: visible.length,
+      count: chats.length,
+      page,
+      total,
       hasMore,
-      ...(hasMore && {
-        note: 'This is one page of conversations, ordered by most recent activity, '
-          + 'and there are older ones it does not include. Do not tell the user '
-          + 'these are all their chats. Use search-messages to find a conversation '
-          + 'by what was said in it rather than assuming it does not exist.',
-      }),
-      chats: visible,
+      ...(hasMore && { nextPage: page + 1 }),
+      ...(truncated && { truncated }),
+      ...(incomplete && { incomplete }),
+      ...(unnamedGroups > 0 && { unnamedGroups }),
+      ...(notes.length > 0 && { note: notes.join(' ') }),
+      chats,
     }
   },
 })
