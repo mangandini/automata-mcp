@@ -22,7 +22,7 @@
 - Commits con las líneas de atribución:
   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` / `Claude-Session: https://claude.ai/code/session_01Kjjdy1CDhDnPrZEXZKTHSZ`
 - Cada implementador: antes de reportar, deja el trabajo commiteado y llama `advisor()`; aplica lo que corresponda y menciónalo en el reporte.
-- Sin framework de tests: RED/GREEN = `pnpm typecheck` + scripts `node` sobre módulos puros + curl JSON-RPC a `/mcp` local. Local **no** tiene WhatsApp vinculado: las pruebas con datos son en producción (Task 6).
+- Sin framework de tests: RED/GREEN local = `pnpm typecheck` + script `node` sobre el módulo puro. Toda prueba MCP es en producción (Task 6).
 
 ## Review Focus
 
@@ -34,12 +34,9 @@
 
 ---
 
-### Task 0: Tokens locales (antes de cualquier tarea; lo hace el coordinador, no un subagente)
+### Ejecución (decisión del usuario, 2026-10-22)
 
-- [ ] `pnpm services:up:whatsapp` y `pnpm dev` corriendo (`http://localhost:3000`).
-- [ ] En la UI local: una conexión **WhatsApp sin vincular** y una **Postgres** al DSN local (`postgres://…@localhost:5440/…`), un token `all_chats/all_tables/all_tools` en cada una. Si no hay credenciales locales de prueba, las crea el usuario en la UI.
-- [ ] Guardar en `.env` (gitignored) como `LOCAL_WA_TOKEN` y `LOCAL_PG_TOKEN`. Todos los curl locales los leen de ahí: `T=$(grep '^LOCAL_WA_TOKEN=' .env | cut -d= -f2)`; `curl -s http://localhost:3000/mcp -H "Authorization: Bearer $T" …`. Nunca imprimir el token.
-- [ ] **Prohibido** crear sesiones, usuarios o tokens escribiendo directo en la base de datos. Sin token → parar y pedirlo.
+Sin pruebas MCP en local (sin tokens locales). Coordinador = sesión principal; cada tarea la implementa un subagente **Sonnet** con el texto de su tarea + este encabezado. RED/GREEN local = `pnpm typecheck` + script `node` (Task 1). Todas las llamadas `curl` a `/mcp` pasan a la Task 6, en producción, tras un solo push. Prohibido crear sesiones, usuarios o tokens escribiendo en la base de datos.
 
 ### Task 1: Normalizador de búsqueda
 
@@ -85,7 +82,7 @@
 - Consumes: `listChatsPage(instance, { q, type, unreadOnly, sort, dir, limit, page, allowedJids })` (Task 2); `useMcpAuth()` → `{ instance, scope }`.
 - Produces (respuesta): `{ count, page, total, hasMore, nextPage?, truncated?, incomplete?, unnamedGroups?, note?, chats }`.
 
-- [ ] **Step 1: RED** — `curl` local `tools/list` con `LOCAL_WA_TOKEN` (Task 0): `list-chats` muestra `inputSchema` vacío.
+- [ ] **Step 1: RED** — `pnpm typecheck` tras pasar los nuevos campos a `listChatsPage` desde el tool aún sin `inputSchema` (o leer el schema actual: vacío).
 - [ ] **Step 2: Implementar.**
   - `inputSchema`: `query` (string 1–100), `type` (enum, def. `all`), `unreadOnly` (bool), `sort` (`last`|`name`), `page` (int ≥1), `limit` (int 1–200, def. 200). `dir` = `desc` si `last`, `asc` si `name`.
   - `allowedJids`: `scope.allChats ? undefined : new Set(scope.chatJids)`.
@@ -94,7 +91,7 @@
   - En `description`: las páginas recorren una foto que se refresca cada minuto; con `sort:'last'` actividad nueva puede reordenar entre páginas. `truncated`/`incomplete`/`unnamedGroups` solo cuando true / > 0.
   - `note` (una cadena, frases concatenadas según aplique): hay más páginas; listado truncado o incompleto ("it may not contain the chat you want; try search-messages"); `unnamedGroups` > 0 con `query` ("N groups have no name right now because WhatsApp did not answer; a name search can miss them — retry in a minute or use search-messages"); `total === 0` con `query` ("try a shorter fragment or search-messages; do not conclude the chat does not exist").
   - Reescribir comentario de cabecera (el argumento "sin paginación" ya no vale: `chatListing()` cachea 60 s y paginar es cortar en memoria) y `description` (cómo encontrar un grupo por fragmento, qué significan `hasMore`/`truncated`, que `unreadCount` es el último estado que vio la conexión).
-- [ ] **Step 3: GREEN** — `pnpm typecheck`; `tools/list` muestra los 6 argumentos; `tools/call list-chats {}` y `{query:"x", page: 999}` sobre la conexión sin vincular → respuesta con forma válida (`chats: []`, `hasMore:false`, sin `nextPage`), sin 500. `{limit: 500}` → error de validación.
+- [ ] **Step 3: GREEN** — `pnpm typecheck` limpio. (Pruebas MCP → Task 6: `tools/list` con 6 argumentos; `{query:"x", page: 999}` → `chats: []`, `hasMore:false`, sin `nextPage`; `{limit: 500}` → error de validación.)
 - [ ] **Step 4:** Commit `feat(mcp): list-chats con búsqueda, filtros y paginación`.
 
 ### Task 4: `listContacts` con scope y tool `list-contacts`
@@ -107,9 +104,9 @@
 - Consumes: `matchesSearch` (Task 1).
 - Produces: `ContactTableQuery` gana `excludeGroups?: boolean`, `allowedJids?: ReadonlySet<string>`, aplicados antes de `q`/orden/corte. Tool responde `{ count, page, total, hasMore, nextPage?, note?, contacts: [{ jid, name, number? }] }`.
 
-- [ ] **Step 1: RED** — `tools/list` local no muestra `list-contacts`.
+- [ ] **Step 1: RED** — el archivo `list-contacts.ts` no existe; `pnpm typecheck` base limpio.
 - [ ] **Step 2: Implementar** opciones en `listContacts` (dashboard no las pasa) y el tool: `query` 1–100, `page` ≥1, `limit` 1–200 def. 100; `excludeGroups: true`; `allowedJids` como en Task 3; proyectar a `{ jid, name, number }`. `note` cuando `total === 0` y no hay `query`: "the contact list came back empty; Evolution may not have answered — this does not mean the account has no contacts". `note` de paginación como en Task 3. Comentario de cabecera: scope opción (a) del usuario, LID vs número falla cerrado, por qué no se toca `contactDirectory`.
-- [ ] **Step 3: GREEN** — `pnpm typecheck`; `tools/list` muestra `list-contacts` con `LOCAL_WA_TOKEN` y **no** con `LOCAL_PG_TOKEN`; `tools/call list-contacts {}` → forma válida con `note` de agenda vacía.
+- [ ] **Step 3: GREEN** — `pnpm typecheck` limpio. (Pruebas MCP → Task 6: `list-contacts` aparece en `tools/list` de GT/CH.)
 - [ ] **Step 4:** Commit `feat(mcp): list-contacts`.
 
 ### Task 5: Instrucciones y documentación
@@ -119,7 +116,7 @@
 - Modify: `CLAUDE.md` (Status: "Twenty-one" → "Twenty-two", añadir `list-contacts` a `whatsapp`), `CODEMAP.md:151`, `docs/using-automata.md:67` (fila `list-chats` nueva + fila `list-contacts`), `docs/mcp-roadmap.md` (M1, N3, N1 → 🟡 implementado, con log; ✅ tras Task 6)
 
 - [ ] **Step 1:** Añadir a `WHATSAPP_INSTRUCTIONS` (inglés) el párrafo de la spec: buscar por fragmento con `list-chats` `query` (+ `type:'group'`), no recorrer la lista; varias coincidencias → preguntar al usuario; ninguna → fragmento más corto o `search-messages`, sin concluir inexistencia con `truncated`/`incomplete`/`unnamedGroups`; luego `read-messages` con `since`; `list-contacts` para nombre/número de personas.
-- [ ] **Step 2:** `pnpm typecheck`; `curl` `initialize` local con token WhatsApp → `instructions` contiene `list-contacts`.
+- [ ] **Step 2:** `pnpm typecheck` limpio. (Task 6: `initialize` en producción → `instructions` contiene `list-contacts`.)
 - [ ] **Step 3:** Actualizar los docs listados. Commit `docs: lote A (instrucciones, status, roadmap)`.
 
 ### Task 6: Revisión, merge y verificación en producción
@@ -129,6 +126,8 @@
 - [ ] **Step 3: Baseline.** Confirmar que existen `baseline-list-chats-{GT,CH}.txt` en el scratchpad (capturados 2026-10-22 en `main`).
 - [ ] **Step 4: Merge + push a `main`** (`superpowers:finishing-a-development-branch`). Antes, confirmar con el usuario que no hay importación en curso. Seguir el deploy en Coolify (stop-then-start).
 - [ ] **Step 5: Criterios en producción** con `GT_TOKEN` / `CH_TOKEN` de `.env` (sin imprimirlos):
+  - `tools/list` (GT): `list-chats` con 6 argumentos y `list-contacts` presente; `initialize` → `instructions` menciona `list-contacts`.
+  - `list-chats {query:"zzzz-no-existe", page: 999}` → `chats: []`, `hasMore:false`, sin `nextPage`, con `note`; `{limit: 500}` → error de validación.
   - `list-chats {}` (ambos): ≤200 filas, misma forma que el baseline, orden por última actividad.
   - CL: `{query:"chk", type:"group"}` → exactamente `PREESCOLAR CHK 2025🏫⭐`; `{query:"preescolar"}` y `{query:"PREÉSCOLAR"}` también lo encuentran.
   - Paginar con `sort:'name'`, `limit: 100` hasta `hasMore:false`, todo en menos de un minuto: suma de `count` = `total`, sin jids repetidos.
