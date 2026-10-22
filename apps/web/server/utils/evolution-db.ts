@@ -321,9 +321,9 @@ export async function searchMessages(
           ${options.includeReactions ? sql`` : sql`AND m.message->'reactionMessage' IS NULL`}
           -- Control records are excluded by intent, not only by accident. Today
           -- this is a no-op: no arm above reads anything out of a non-edit
-          -- protocolMessage, so such a row has no body and body IS NOT NULL
-          -- already dropped it. It is here so a future arm cannot quietly start
-          -- surfacing bookkeeping. It cannot drop an unwrapped edit — any row
+          -- protocolMessage, so such a row has no body and no filename, and the
+          -- (body OR filename) IS NOT NULL predicate above already dropped it. It is here so a future arm
+          -- cannot quietly start surfacing bookkeeping. It cannot drop an unwrapped edit — any row
           -- whose body came from the edit arms has editedMessage non-null. Never
           -- let this grow into something that inspects where the body came from;
           -- that is where it would start dropping real edits.
@@ -473,7 +473,7 @@ export async function listMessagesPage(
         ${patterns ? messageBodyJoin(sql) : sql``}
         WHERE m."instanceId" = ${instanceId}
           ${options.jid === undefined ? sql`` : sql`AND m.key->>'remoteJid' = ${options.jid}`}
-          ${patterns === undefined ? sql`` : sql`AND ${searchableText(sql)} ILIKE ALL (${patterns}::text[])`}
+          ${patterns === undefined ? sql`` : sql`AND (t.body IS NOT NULL OR t.filename IS NOT NULL) AND ${searchableText(sql)} ILIKE ALL (${patterns}::text[])`}
           ${since === undefined ? sql`` : sql`AND m."messageTimestamp" >= ${since}`}
           ${until === undefined ? sql`` : sql`AND m."messageTimestamp" <= ${until}`}
           ${options.includeReactions ? sql`` : sql`AND m.message->'reactionMessage' IS NULL`}
@@ -512,7 +512,8 @@ export async function listMessagesPage(
 
 /**
  * The readable text of a message, as a `CROSS JOIN LATERAL ... AS t` yielding
- * `t.body` — null for a row that carries nothing renderable.
+ * `t.body` — null for a row that carries nothing renderable — and `t.filename`,
+ * the file name of a document message (null otherwise).
  *
  * One authority for what counts as a body, shared by `searchMessages` (which
  * matches on it) and `listMessagesPage` (which joins it only when there are
