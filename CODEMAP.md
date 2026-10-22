@@ -148,7 +148,7 @@ Nombre del tool = basename del archivo (único globalmente). Gate por kind + sco
 
 | Grupo | Tools | kinds |
 |---|---|---|
-| `whatsapp/` | get-connection-status, list-chats, read-messages, search-messages, send-text-message (write) | whatsapp |
+| `whatsapp/` | get-connection-status, list-chats, list-contacts, read-messages, search-messages, send-text-message (write) | whatsapp |
 | `telegram/` | get-telegram-status, list-telegram-chats, read-telegram-messages, search-telegram-messages, send-telegram-message (write) | telegram |
 | `sql/` | get-database-info, list-tables, describe-table, run-query, run-statement (write) | postgres (todos los SQL) |
 | `imap/` | get-mailbox-status, list-mail-folders, list-emails, search-emails, read-email, get-email-attachment | imap |

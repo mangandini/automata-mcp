@@ -43,6 +43,13 @@ export const WHATSAPP_INSTRUCTIONS = [
   'disappearing-message timer changes, key exchanges — carry nothing readable and are left out of',
   'reads; when any were, `protocolMessagesExcluded` says how many, and `totalMatching` still',
   'counts them.',
+  'To work on a conversation by its name ("the CHK group"), find it with `list-chats` passing a',
+  'fragment of the name as `query` (and `type: \'group\'` for groups); do not walk the whole list.',
+  'If more than one chat matches, ask the user which one before reading. If none matches, try a',
+  'shorter fragment or `search-messages` for something that was said there, and do not conclude it',
+  'does not exist while the response carries `truncated`, `incomplete` or `unnamedGroups`.',
+  'Then read it with `read-messages` using `since`. `list-contacts` gives the name and number of',
+  'people in the address book.',
 ].join(' ')
 
 export const POSTGRES_INSTRUCTIONS = [

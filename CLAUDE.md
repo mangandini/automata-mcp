@@ -48,9 +48,9 @@ App's own data (users, sessions, organizations, connections + credentials, token
 
 `README.md` = public landing page (logo, links, screenshots, features, quick start) — keep short. Operator's manual lives in `docs/`: `self-hosting.md` (root `docker-compose.yml` + `.env.selfhost.example`, published images), `deploy-railway.md`, `development.md` (local setup, networking tables, Linux firewall rule), `whatsapp.md`, `telegram.md`, `postgres.md`, `imap.md`, `alerts.md`, `using-automata.md`, `releases.md`. Read before anything involving Docker or local stack; this file covers code. Two compose files: `docker-compose.dev.yml` = services only for dev; `docker-compose.yml` = full self-host stack, separate project name `automata`. Third self-host path: `docker/aio/` = all-in-one image, everything in one container — see "All-in-one image".
 
-**Status:** product loop works end to end for all four kinds — sign up (creates organization), invite colleagues, create connection, pair by QR (importing number's WhatsApp history as it connects), link Telegram by QR, or paste DSN, per-connection dashboard, assign connections to members, connector token provisioning with per-chat, per-folder or per-table scoping. Twenty-one MCP tools, gated by kind:
+**Status:** product loop works end to end for all four kinds — sign up (creates organization), invite colleagues, create connection, pair by QR (importing number's WhatsApp history as it connects), link Telegram by QR, or paste DSN, per-connection dashboard, assign connections to members, connector token provisioning with per-chat, per-folder or per-table scoping. Twenty-two MCP tools, gated by kind:
 
-- `whatsapp`: `get-connection-status`, `list-chats`, `read-messages`, `search-messages`, `send-text-message`
+- `whatsapp`: `get-connection-status`, `list-chats`, `list-contacts`, `read-messages`, `search-messages`, `send-text-message`
 - `telegram`: `get-telegram-status`, `list-telegram-chats`, `read-telegram-messages`, `search-telegram-messages`, `send-telegram-message`
 - `postgres` (the `sql/` group): `get-database-info`, `list-tables`, `describe-table`, `run-query`, `run-statement` (write)
 - `imap`: `get-mailbox-status`, `list-mail-folders`, `list-emails`, `search-emails`, `read-email`, `get-email-attachment` (all read)
