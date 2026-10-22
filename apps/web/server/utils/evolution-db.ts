@@ -200,10 +200,19 @@ export async function resolveEvolutionInstanceId(instance: AppInstance): Promise
 }
 
 export interface MessageSearchOptions {
-  /** Every term must appear in the message body. Already split, not yet escaped. */
+  /**
+   * Words to find in the message text. Already split, not yet escaped. May be
+   * empty (a search by author alone): then no text predicate is emitted at all,
+   * since `ILIKE ANY ('{}')` would match nothing rather than everything.
+   */
   terms: string[]
-  /** Restrict to one chat. */
-  jid?: string
+  /** `all`: every term must appear. `any`: at least one. Defaults to `all`. */
+  match?: 'all' | 'any'
+  /**
+   * Restrict to these chats. An empty list matches nothing, like an empty
+   * `allowedJids`: a scope that resolved to no chat must not read as no scope.
+   */
+  jids?: string[]
   /** The only chats this token may see. Omit for an all-chats token. */
   allowedJids?: string[]
   since?: string
@@ -219,6 +228,8 @@ export interface MessageSearchOptions {
    */
   includeReactions?: boolean
   limit: number
+  /** 1-based, counting back from the newest. */
+  page: number
 }
 
 export interface MessageSearchHit {
@@ -258,7 +269,7 @@ export interface MessageSearchHit {
 export async function searchMessages(
   instance: AppInstance,
   options: MessageSearchOptions,
-): Promise<{ hits: MessageSearchHit[], truncated: boolean }> {
+): Promise<{ hits: MessageSearchHit[], hasMore: boolean, total?: number }> {
   // Database first, deliberately. `resolveEvolutionInstanceId` may call the
   // account's Evolution API, and its 409/503 would otherwise mask the clearer
   // "add your database connection string" refusal for a connection that can
@@ -266,13 +277,17 @@ export async function searchMessages(
   const sql = await evolutionDbFor(instance)
   const instanceId = await resolveEvolutionInstanceId(instance)
 
-  const patterns = options.terms.map(term => `%${escapeLike(foldForSearch(term))}%`)
+  const patterns = options.terms.length
+    ? options.terms.map(term => `%${escapeLike(foldForSearch(term))}%`)
+    : undefined
   const since = toUnixSeconds(options.since, 'since')
   const until = toUnixSeconds(options.until, 'until')
 
   // One extra row tells us there were more matches than we returned, for a
-  // fraction of the cost of a second COUNT(*) over the same scan.
+  // fraction of the cost of a second COUNT(*) over the same scan. `hasMore` comes
+  // from it and never from `total`, so a wrong count cannot page a caller forever.
   const take = options.limit + 1
+  const skip = (options.page - 1) * options.limit
 
   let rows: MessageRow[]
   try {
@@ -312,8 +327,12 @@ export async function searchMessages(
         ${messageBodyJoin(sql)}
         WHERE m."instanceId" = ${instanceId}
           AND (t.body IS NOT NULL OR t.filename IS NOT NULL)
-          AND ${searchableText(sql)} ILIKE ALL (${patterns}::text[])
-          ${options.jid ? sql`AND m.key->>'remoteJid' = ${options.jid}` : sql``}
+          ${patterns === undefined
+            ? sql``
+            : options.match === 'any'
+              ? sql`AND ${searchableText(sql)} ILIKE ANY (${patterns}::text[])`
+              : sql`AND ${searchableText(sql)} ILIKE ALL (${patterns}::text[])`}
+          ${options.jids ? sql`AND m.key->>'remoteJid' = ANY(${options.jids}::text[])` : sql``}
           ${options.allowedJids ? sql`AND m.key->>'remoteJid' = ANY(${options.allowedJids}::text[])` : sql``}
           ${since === undefined ? sql`` : sql`AND m."messageTimestamp" >= ${since}`}
           ${until === undefined ? sql`` : sql`AND m."messageTimestamp" <= ${until}`}
@@ -331,10 +350,11 @@ export async function searchMessages(
                OR m.message->'protocolMessage'->'editedMessage' IS NOT NULL)
         ORDER BY m.key->>'id', named DESC, m."messageTimestamp" DESC, "rowId"
       )
-      SELECT key, "pushName", "messageType", "messageTimestamp", body, filename, mentioned, "editOf"
+      SELECT key, "pushName", "messageType", "messageTimestamp", body, filename, mentioned, "editOf",
+             COUNT(*) OVER () AS total
       FROM matched
       ORDER BY "messageTimestamp" DESC, key->>'id' DESC
-      LIMIT ${take}
+      LIMIT ${take} OFFSET ${skip}
     `
   }
   catch (error) {
@@ -346,7 +366,10 @@ export async function searchMessages(
     })
   }
 
-  const truncated = rows.length > options.limit
+  // Counts the deduplicated set, so it is distinct matching messages — not rows.
+  // It rides on the returned rows: a page past the end carries no count rather
+  // than a zero, because "not measured" and "none" are different answers.
+  const total = Number(rows[0]?.total)
 
   return {
     hits: rows.slice(0, options.limit).map(row => ({
@@ -364,7 +387,8 @@ export async function searchMessages(
       mentioned: mentionedJidsOf(row.mentioned),
       ...(row.editOf && { editOf: row.editOf }),
     })),
-    truncated,
+    hasMore: rows.length > options.limit,
+    total: Number.isFinite(total) ? total : undefined,
   }
 }
 
@@ -673,6 +697,8 @@ interface MessageRow {
   body: string | null
   /** File name of a document message, null for anything else. */
   filename: string | null
+  /** `COUNT(*) OVER ()` on the search query; a bigint arrives as a string. Absent elsewhere. */
+  total?: number | string | null
   /**
    * `contextInfo.mentionedJid`, or null where the message mentions nobody.
    *

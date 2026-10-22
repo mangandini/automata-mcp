@@ -70,9 +70,9 @@ export default defineKindTool({
 
     if (jid) assertChatAllowed(scope, jid)
 
-    const { hits, truncated } = await searchMessages(instance, {
+    const { hits, hasMore } = await searchMessages(instance, {
       terms,
-      jid,
+      jids: jid ? [jid] : undefined,
       // A named chat is already checked above. Otherwise a scoped token gets its
       // allowlist pushed into the query, so out-of-scope messages are never read.
       allowedJids: jid || scope.allChats ? undefined : scope.chatJids,
@@ -81,6 +81,7 @@ export default defineKindTool({
       fromMe,
       includeReactions,
       limit,
+      page: 1,
     })
 
     const [names, directory] = await Promise.all([
@@ -103,7 +104,7 @@ export default defineKindTool({
       })),
       count: hits.length,
       // Say so rather than presenting a capped page as the whole answer.
-      truncated,
+      truncated: hasMore,
       // Same principle: a whole message class this search never looked at.
       ...(!includeReactions && { reactionsExcluded: true }),
     }
