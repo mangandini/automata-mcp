@@ -144,3 +144,5 @@ Local tiene la base y Evolution pero **ninguna cuenta vinculada** (ver OPS.md), 
 ## Baseline (producción, `main` @ 9c107ea, 2026-10-22)
 
 `list-chats` sin argumentos: GT 200 filas, `hasMore:true`, 34 grupos, 1,6 s; CL 200 filas, `hasMore:true`, 17 grupos, **8,1 s** (lista fría). `PREESCOLAR CHK 2025🏫⭐` está en CL. Ningún grupo nombrado por id en ese momento. Respuesta ~88 KB por llamada (incluye `profilePicUrl` largas). Guardado en el scratchpad de la sesión.
+
+**Latencia en frío (medida en el panel, 2026-10-22).** La primera lectura de la lista tras >5 min tarda ~9 s en GT (paso compartido: contactos + grupos), luego ~270 ms. El lote A no lo arregla (lote F / P1); la primera llamada a `list-chats`/`list-contacts` de una conversación puede tardar eso. Aceptado.

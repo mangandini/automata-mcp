@@ -230,4 +230,6 @@ curl -s https://wa.royale.ventures/mcp \
 **Siguiente paso.** `Server-Timing` por paso (auth, SQL, nombres) + `EXPLAIN (ANALYZE, BUFFERS)`; luego decidir (caché de grupos, `total` solo en página 1, índice propio en `public."Message"` — ojo: es tabla de Evolution, re-verificar en bump de tag).
 
 **Log.**
-- 2026-10-22 — medido Messages; pendiente medir Chats (frío/caliente/búsqueda).
+- 2026-10-22 — medido Messages.
+- 2026-10-22 — medido Chats (`/chats?limit=100&sort=last`). GT: frío **9,3 s**, caliente 272 ms, búsqueda ~270–300 ms (no es lenta). CL: frío 974 ms, caliente ~275 ms. El frío de GT ≈ el de Messages → paso compartido por instancia, no la consulta: candidatos `contactDirectory()` (tabla de contactos completa, 5 min) y `fetchGroups()` (en vivo, 5 min). El poll de 15 s a `/api/instances/:id` no lo mantiene caliente. MCP `list-chats` (baseline del lote A) mostró lo mismo: CL 8,1 s en frío, GT 1,6 s (ya caliente). El diálogo **New token** pide `/chats` sin parámetros (63 KB, todos) y también paga los 9 s.
+- Card vs lista (GT 697 vs 551, CL 668 vs 566): **esperado, no es bug** — la card cuenta filas de `Chat` (`_count.Chat`) y la lista sale de `Message` (`findChats`); `messaging-history.set` escribe un `Chat` por cada conversación del teléfono aunque no traiga mensajes (ver CLAUDE.md › "`_count.Chat` and `findChats` count different tables"). Opcional en P1: rotular la card ("chats en el teléfono") para que no parezca un error.
