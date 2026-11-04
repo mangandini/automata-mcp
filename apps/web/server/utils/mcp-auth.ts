@@ -71,6 +71,8 @@ export type TokenLookup = { hash: string } | { id: string }
  * The single copy of the token-facts query, for every caller that has to answer
  * "may this token be used right now". It only reads: what a missing piece means,
  * and which failure it maps to, stays with the caller (see `resolveMcpAuth`).
+ * Looking up by `{ id }` authenticates nothing: unlike `{ hash }`, the caller
+ * holds no proof of the secret and must bring its own.
  *
  * `assigned` is about the token's own `instance`, and `member_org` is the org of
  * the holder's membership: a caller compares that against the org of the
