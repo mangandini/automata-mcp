@@ -85,7 +85,10 @@ export async function downloadVerifiedMedia(
   options: { maxBytes: number },
 ): Promise<EvolutionMedia> {
   const { remoteJid, id } = source.key
-  if (!remoteJid || !id) throw new MediaError('internal', 'The stored message has no id or chat.')
+  if (!remoteJid || !id) {
+    console.error(`[media] BUG: the stored message handed to the download has no id or chat (connection ${instance.id}, id ${id ?? 'none'})`)
+    throw failure('internal')
+  }
   const cacheKey = mediaCacheKey(instance.id, remoteJid, id)
 
   const hit = mediaCache().get(cacheKey)
@@ -156,7 +159,17 @@ async function lead(
       }
 
       const body = await readBodyCapped(response.body, maxResponseBodyBytes(maxBytes))
-      const media = parseEvolutionMediaBody(body)
+      let media: EvolutionMedia
+      try {
+        media = parseEvolutionMediaBody(body)
+      }
+      catch (error) {
+        // A 2xx that is not JSON (a proxy's page, say) is nothing we recognise: say what it was.
+        if (error instanceof MediaError && error.kind === 'unknown') {
+          console.error(`[media] Evolution answered ${response.status} with a body that is not JSON for connection ${instance.id}: ${body.subarray(0, 300).toString('utf8')}`)
+        }
+        throw error
+      }
       if (media.bytes.length > maxBytes) throw failure('too-large')
       // Never cached, never served.
       if (sha256Matches(media.bytes, source.sha256) === false) {
@@ -217,6 +230,8 @@ async function evolutionFailure(instance: AppInstance, status: number, body: Rea
  * `unknown` rather than guessing.
  */
 export async function describeMediaFailure(instance: AppInstance, error: unknown): Promise<{ status: number, message: string }> {
+  // The app's own refusals (not provisioned, host refused) keep their status.
+  if (isError(error)) return { status: error.statusCode, message: error.statusMessage ?? error.message }
   if (!(error instanceof MediaError)) {
     console.error(`[media] unexpected failure for connection ${instance.id}:`, error)
     return mediaFailureMessage('internal')
