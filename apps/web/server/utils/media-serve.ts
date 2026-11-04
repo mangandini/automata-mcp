@@ -61,28 +61,29 @@ async function resolveLink(event: H3Event, token: string): Promise<{ link: AppMe
   const turn = limiter.hit(clientIp(event))
   if (!turn.allowed) return { answer: notice(event, 'rate', turn.retryAfterSec) }
 
-  // The lookup and the authorization log their own failure (naming the step and
-  // the link id); here a thrown H3 error only becomes the page. Anything that is
-  // not an H3 error is a bug and goes to Nitro unhandled, which redacts the URL.
-  let link: AppMediaLink | undefined
-  try {
-    link = await findMediaLinkByToken(token)
-  }
-  catch (error) {
-    if (isError(error)) return { answer: notice(event, 'error') }
-    throw error
-  }
+  const link = await findMediaLinkByToken(token)
   if (!link) return { answer: notice(event, 'invalid') }
   return { link }
 }
 
 /** What the link may be used for right now (`authorizeMediaLink`), or `answer`, a prepared notice. */
 async function authorize(event: H3Event, link: AppMediaLink) {
+  return await authorizeMediaLink(link) ?? { answer: notice(event, 'invalid') }
+}
+
+/**
+ * The link lookup, the authorization, the claim and the message read log their
+ * own failure (naming the step and the link id) and throw an H3 error; that
+ * error becomes the `error` page here, so an unreadable database is never
+ * "invalid link". Anything that is not an H3 error is a bug and goes to Nitro
+ * unhandled, which redacts the URL.
+ */
+async function answeringOutages<T extends string | Buffer>(event: H3Event, serve: () => Promise<T>): Promise<T | string> {
   try {
-    return await authorizeMediaLink(link) ?? { answer: notice(event, 'invalid') }
+    return await serve()
   }
   catch (error) {
-    if (isError(error)) return { answer: notice(event, 'error') }
+    if (isError(error)) return notice(event, 'error')
     throw error
   }
 }
@@ -93,7 +94,11 @@ async function authorize(event: H3Event, link: AppMediaLink) {
  * button, and calls nothing else. HEAD gets the same headers; Node drops the
  * body.
  */
-export async function serveMediaPage(event: H3Event, token: string): Promise<string> {
+export function serveMediaPage(event: H3Event, token: string): Promise<string> {
+  return answeringOutages(event, () => servePage(event, token))
+}
+
+async function servePage(event: H3Event, token: string): Promise<string> {
   const resolved = await resolveLink(event, token)
   if ('answer' in resolved) return resolved.answer
   const { link } = resolved
@@ -122,7 +127,11 @@ export async function serveMediaPage(event: H3Event, token: string): Promise<str
  * that goes away mid-body keeps it. Authorization runs on every POST, so a
  * revoked token stops a link even for bytes already in the cache.
  */
-export async function serveMediaFile(event: H3Event, token: string): Promise<string | Buffer> {
+export function serveMediaFile(event: H3Event, token: string): Promise<string | Buffer> {
+  return answeringOutages(event, () => serveFile(event, token))
+}
+
+async function serveFile(event: H3Event, token: string): Promise<string | Buffer> {
   const resolved = await resolveLink(event, token)
   if ('answer' in resolved) return resolved.answer
   const { link } = resolved
@@ -134,13 +143,7 @@ export async function serveMediaFile(event: H3Event, token: string): Promise<str
   let claimed = false
   let delivered = false
   try {
-    try {
-      claimed = await claimMediaDownload(link.id)
-    }
-    catch (error) {
-      if (isError(error)) return notice(event, 'error')
-      throw error
-    }
+    claimed = await claimMediaDownload(link.id)
     if (!claimed) return notice(event, 'limit')
 
     const { linkCap } = mediaLimits()
@@ -162,7 +165,6 @@ export async function serveMediaFile(event: H3Event, token: string): Promise<str
       }
       catch (error) {
         console.error(`[media-link] could not read the message for link ${link.id}:`, error)
-        if (isError(error)) return notice(event, 'error')
         throw error
       }
       if (!row) {
