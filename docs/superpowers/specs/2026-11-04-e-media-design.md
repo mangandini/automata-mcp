@@ -26,7 +26,7 @@ Casos reales: CL 2026-10-22 (monto en un `.xlsx` adjunto y en capturas `[image]`
 ## Objetivos
 
 1. Tool MCP de lectura `get-message-media { messageId }` para conexiones `whatsapp`.
-2. Imagen → bloque `image` (el modelo la ve). PDF → bloque `resource` con el blob (el modelo lo lee donde el cliente lo soporte). Otros documentos (xlsx, docx, …) → solo metadatos y enlace.
+2. Imagen → **reducida y comprimida en el servidor** hasta caber en el presupuesto de respuesta, y enviada como bloque `image`. PDF → **texto extraído en el servidor** y enviado como bloque de texto (recortado al presupuesto, diciendo si se recortó); un PDF escaneado sin texto → solo enlace, y `note` lo dice. Otros documentos (xlsx, docx, …) → solo metadatos y enlace. (Decisiones del usuario 2026-11-04, tras la investigación de abajo.)
 3. En todos los casos soportados, un **enlace de descarga** de 1 hora, reutilizable, con el nombre de archivo original.
 4. Errores honestos y distinguibles: no existe/fuera de scope (uno solo), tipo no soportado, demasiado grande, medio expirado en WhatsApp, cuenta desconectada.
 5. Scope del token comprobado sobre el chat **del propio mensaje**, nunca sobre un argumento.
@@ -37,7 +37,7 @@ Casos reales: CL 2026-10-22 (monto en un `.xlsx` adjunto y en capturas `[image]`
 
 - Audio, notas de voz (transcripción), video, stickers, view-once (ver "Cuidados").
 - Guardar bytes en nuestra base de datos o en almacenamiento de objetos (decisión del usuario; además `CLAUDE.md` › IMAP mantiene la misma regla para correo).
-- OCR propio o conversión de formatos (xlsx → texto). Claude lee lo que el cliente le deja leer.
+- OCR (PDF escaneado, texto dentro de imágenes lo lee Claude si ve la imagen) y conversión de otros formatos (xlsx/docx → texto).
 - Telegram e IMAP (IMAP ya tiene `get-email-attachment`; su enlace de descarga, si se quiere, es otro ítem).
 - Descargas por lote ("todos los adjuntos del chat").
 
@@ -51,7 +51,7 @@ Casos reales: CL 2026-10-22 (monto en un `.xlsx` adjunto y en capturas `[image]`
   2. Desenvolver el contenido como `classifyContent` (`associatedChildMessage`, `editedMessage`, `documentWithCaptionMessage`) y decidir el tipo por **payload**, no por `messageType`. `imageMessage` o `documentMessage` → continúa; cualquier otro (audio, video, sticker, view-once, ephemeral sin desenvolver, texto) → error "tipo no soportado" que nombra el tipo.
   3. Rechazar por tamaño declarado (`fileLength`) antes de descargar si supera el **tope de enlace**.
   4. Descargar vía Evolution (`POST /chat/getBase64FromMediaMessage/{instance}`, cliente por instancia de `useEvolutionClient()`, sin clave global). Si el DTO acepta el mensaje completo, enviar **la fila ya comprobada** (lo descargado = lo comprobado). Re-verificar el tope sobre los bytes reales.
-  5. Crear el enlace (ver abajo) y devolver `content: [...]`: primero un bloque de texto JSON con metadatos (`messageId`, `jid`, `type`, `fileName`, `mimeType`, `size`, `download: { url, expiresAt }`, `note`), luego el bloque `image` o `resource` según el tipo, **solo si cabe en el tope de lectura**; si no cabe, solo metadatos + enlace y `note` lo dice (el usuario igual recibe el archivo).
+  5. Crear el enlace (ver abajo) y devolver `content: [...]`: primero un bloque de texto JSON con metadatos (`messageId`, `jid`, `type`, `fileName`, `mimeType`, `size`, `download: { url, expiresAt }`, `note`), luego el bloque `image` (reducida) o el texto del PDF, **dentro del presupuesto de respuesta**; si no se puede (imagen que no baja lo suficiente, PDF sin texto, archivo sobre el tope de lectura), solo metadatos + enlace y `note` lo dice (el usuario igual recibe el archivo). No se usa bloque `resource` con blob: en Claude.ai no se lee de forma fiable (ver investigación).
 - Errores de Evolution: medio expirado / no recuperable → error explícito que lo dice ("WhatsApp ya no tiene este archivo; pide que lo reenvíen"); cuenta no conectada → 503 que lo dice. Nunca un resultado vacío. (Los códigos exactos de Evolution 2.3.7 para "expirado" **están por verificar**; ver "Lo que queda al constructor".)
 - `readOnlyHint: true`, `openWorldHint: true` (habla con WhatsApp).
 - Sin `NUXT_PUBLIC_APP_URL` → el tool devuelve el contenido sin enlace y lo dice en `note`. Nunca se construye el enlace con el `Host` de la petición.
@@ -77,13 +77,26 @@ Casos reales: CL 2026-10-22 (monto en un `.xlsx` adjunto y en capturas `[image]`
 - El selector de scope (`TokenScopeFields.vue`) lo muestra como casilla aparte, desmarcada por defecto, también cuando "todas las herramientas" está marcado, con una línea que diga qué expone ("descarga adjuntos y crea enlaces de descarga de 1 hora").
 - Cómo se guarda (p. ej. permitir `tool_names` con extras opt-in cuando `all_tools` es verdadero, o una marca en la definición del tool que `isToolAllowed` respete) queda al constructor, con tres condiciones: tokens existentes no lo ganan sin edición; el gate sigue siendo síncrono (`enabled` se evalúa dos veces por petición); `scopeFields()` sigue escribiendo todos los ejes.
 
+## Investigación (2026-11-04)
+
+**Evolution 2.3.7** (fuente, tag `2.3.7`, commit cd800f2, Baileys 7.0.0-rc.9):
+- `POST /chat/getBase64FromMediaMessage/:instance`, cuerpo `{ message: { key: { id } } }` (o el `WebMessageInfo` completo con `message`; entonces no consulta su BD). Éxito **201**: `{ mediaType, fileName, caption, size: { fileLength, … }, mimetype, base64 }`. Con solo `key.id` busca `SELECT * … WHERE instanceId AND key->>'id'` sin orden (copias idénticas: inocuo).
+- Desenvuelve `ephemeralMessage`, `documentWithCaptionMessage`, `viewOnce*`; **no** `associatedChildMessage`: hay que desenvolverlo nosotros y mandar el mensaje interior (`message.message`), lo que además hace que lo descargado sea la fila ya comprobada.
+- **Todo error es 400** con texto en `response.message[0]`: `Message not found`, `The message is not of the media type`, o el error de descarga (medio expirado: CDN 404/410 dentro del texto, tras pedir re-subida al teléfono y un reintento de 5 s). Hay que clasificar por texto, con un mensaje genérico honesto si no se reconoce.
+- La re-subida al teléfono **no tiene timeout** en Baileys: llamada con **timeout propio** (mi decisión: 30 s, dentro de los 240 s de Claude.ai) que se informa como "WhatsApp no respondió; puede que el archivo ya no esté".
+- Con el socket cerrado puede funcionar igual si el CDN aún tiene el archivo.
+
+**Claude.ai** (docs de conectores + issues abiertos de `anthropics/claude-ai-mcp`): resultado de tool máx. ~150 000 caracteres y 240 s; bloques `image` soportados pero con reportes de que en web no llegan al modelo (#238); `resource` con blob reportado como fallido en web (#536) → no se usa para PDF. A probar en vivo: imagen pequeña y reducida, texto de PDF.
+
 ## Restricciones (de `CLAUDE.md`)
 
 - Evolution DB: solo `SELECT` parametrizados, `instanceId` siempre, scope como predicado SQL, dedupe `DISTINCT ON`, rutas jsonb explícitas.
 - Credenciales por instancia; nunca clave global ni descarga fuera del MCP con la API key de la instancia.
 - `defineKindTool`, nombre de archivo único entre grupos, `title`, descripción escrita para el modelo.
 - Resultado con `content: [...]` pasa intacto por `normalizeToolResult` (patrón de `get-email-attachment`).
-- **Dos topes, mi decisión** (leer y recibir son cosas distintas): tope de **lectura** (lo que se manda a Claude como bloque; valor según los límites reales del cliente, a verificar — no asumir que los 10 MB de IMAP se probaron) y tope de **enlace** `NUXT_WHATSAPP_MEDIA_MAX_BYTES`, por defecto 25 MB, que también aplica la ruta. Ambos en `.env.example`.
+- **Dependencias nuevas** (decisión del usuario): una librería de extracción de texto de PDF en JavaScript puro y una de procesamiento de imágenes. El constructor elige cuáles y verifica que funcionan en las tres imágenes (`apps/web/Dockerfile`, `docker/aio/Dockerfile` Alpine/musl, Railway) y en Node 22.
+- **Presupuesto de respuesta**: todo el resultado del tool (JSON + imagen en base64 o texto del PDF) cabe con margen en ~150 000 caracteres (mi decisión: objetivo ≤ 120 000).
+- **Dos topes, mi decisión** (leer y recibir son cosas distintas): tope de **lectura** (tamaño máximo del original que se intenta reducir o extraer; mi decisión 25 MB, igual al de enlace, salvo que la memoria lo desaconseje) y tope de **enlace** `NUXT_WHATSAPP_MEDIA_MAX_BYTES`, por defecto 25 MB, que también aplica la ruta. Ambos en `.env.example`.
 - Sin framework de tests: `pnpm typecheck` + llamadas JSON-RPC reales (local y producción).
 
 ## Criterios de aceptación (producción, GT/CL)
@@ -101,7 +114,7 @@ Casos reales: CL 2026-10-22 (monto en un `.xlsx` adjunto y en capturas `[image]`
 
 ## Lo que queda al constructor
 
-- Verificar contra Evolution v2.3.7 la forma exacta de `getBase64FromMediaMessage` (cuerpo, respuesta, errores para medio expirado y para cuenta desconectada) y si necesita el teléfono en línea.
-- Verificar qué hace Claude.ai con un `resource` PDF (¿lo lee?) e imagen grande; ajustar sin romper el enlace.
+- Texto exacto del error de medio expirado (verificar en vivo con un mensaje antiguo).
+- Elección de librerías y parámetros de reducción (dimensión, calidad) que dejen legible una captura o un comprobante.
 - Nombre exacto del prefijo de la ruta, de la tabla y del mecanismo de opt-in, dentro de las condiciones de arriba.
 - Cómo se ve el 404/error del enlace (JSON o página mínima).
