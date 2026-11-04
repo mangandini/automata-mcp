@@ -218,6 +218,18 @@ instead of a page. Take the hit's `jid` and `id` from `search-messages`:
   single form. Messages the same conversation has under its other form are not
   part of the window. Pass the `jid` the hit came back with to be exact.
 
+## Opening an attachment
+
+A hit that is a file shows its name in the text and its `id`; the answer is often
+inside the file (a quote, a bank transfer screenshot). If the token has
+`get-message-media` ticked (it is off by default, see
+[WhatsApp connections](whatsapp.md#attachments-get-message-media)), pass that id
+to it: images come back as pictures, PDFs as text, and every call also returns a
+download link (1 hour, 20 downloads, no sign-in) to give to the person who wants
+the file. Spreadsheets and Word files are not read, only linked. Asking for the
+same attachment twice downloads it from WhatsApp again unless it was fetched in
+the last ten minutes.
+
 ## When an answer is empty or looks short
 
 - A search that finds nothing is only "nothing found" if it also did not carry a

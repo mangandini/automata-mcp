@@ -235,10 +235,23 @@ function mimeOf(value: unknown): string | undefined {
   return value.split(';')[0]!.trim().toLowerCase() || undefined
 }
 
-/** `fileLength` is a string or a number depending on where in Evolution's pipeline it was read. */
+/**
+ * `fileLength` is a string, a number, or a protobuf `Long` (`{ low, high,
+ * unsigned }`, two 32-bit halves) depending on where in Evolution's pipeline it
+ * was read; all three mean the same unsigned size. A negative signed Long or a
+ * value past 2^53 is not a size we can compare, so it reads as unknown, never 0.
+ */
 function declaredSizeOf(value: unknown): number | undefined {
-  const size = typeof value === 'string' && /^\d+$/.test(value.trim()) ? Number(value) : value
+  const size = typeof value === 'string' && /^\d+$/.test(value.trim()) ? Number(value) : longToNumber(value) ?? value
   return typeof size === 'number' && Number.isSafeInteger(size) && size > 0 ? size : undefined
+}
+
+function longToNumber(value: unknown): number | undefined {
+  const long = asRecord(value)
+  if (!long || !Number.isInteger(long.low) || !Number.isInteger(long.high)) return undefined
+  const high = long.unsigned === true ? long.high >>> 0 : long.high
+  if (high < 0) return undefined
+  return high * 4294967296 + (long.low >>> 0)
 }
 
 // ---------------------------------------------------------------- bytes

@@ -60,6 +60,13 @@ export const WHATSAPP_INSTRUCTIONS = [
   'its id as `around`.',
   'Before concluding that nothing was found, follow `hasMore`/`nextPage`, and when the response has a',
   '`window`, pass `until` as its `window.until`, so every page comes from the same range.',
+  'When this connector offers `get-message-media`, it opens the attachment of one message (the `id`',
+  'from `search-messages` or `read-messages`): an image as a picture, a PDF as its text. Use it when',
+  'the answer is inside the file rather than in the text, and ask for a given attachment once.',
+  'It also creates a public download link valid for one hour, for the user to open without',
+  'signing in; give that link to the user, not to anyone else. Audio, video, voice notes and',
+  'stickers cannot be fetched, and a file WhatsApp no longer serves has to be sent again by its',
+  'sender.',
 ].join(' ')
 
 export const POSTGRES_INSTRUCTIONS = [

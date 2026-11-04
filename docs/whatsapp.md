@@ -132,6 +132,63 @@ On Railway, Evolution's Postgres is its own service — use its private URL, and
 note the port there is whatever that service actually listens on (see "Pin the
 ports").
 
+## Attachments (`get-message-media`)
+
+`get-message-media` opens the attachment of one message, by the message `id` that
+`search-messages` and `read-messages` return. It is **opt-in**: "all actions" does
+not include it, and a token holds it only when it is ticked by name under "Extras
+(off by default)" in the token dialog. Tokens that existed before it keep not
+having it.
+
+What a call does, in order:
+
+1. Looks the message up in Evolution's database, limited to the chats in the
+   token's scope. A message that does not exist, one in a chat outside the scope,
+   and one that is only reachable through its other `@lid` or phone form all get
+   the same 404, so ids cannot be probed.
+2. Refuses what is not an image or a document: audio, voice notes, video,
+   stickers, view-once media (422, naming the type). Files declared above 25 MB
+   (`NUXT_WHATSAPP_MEDIA_MAX_BYTES`) are refused before anything is downloaded.
+3. Downloads the file from WhatsApp, once, through Evolution
+   (`getBase64FromMediaMessage`, sent the whole stored message, not just its id),
+   with a 30 s timeout, a two-at-a-time limit per process, a two-minute pause on a
+   message after a timeout, and a check of the bytes against the message's own
+   `fileSha256`. Only images and PDFs of up to 10 MB are read for the model;
+   other documents (Word, Excel, text) and anything over 10 MB are never
+   downloaded by the tool: they come back as details plus the link.
+4. Gives the model what it can read. An image comes back as a picture, shrunk
+   to fit the response (`processing.imageStep` says how far; the original is behind
+   the link). A PDF comes back as its text with `[page N]` markers, up to 50
+   pages, 10 s and the response size; a scanned PDF has no text and comes back as
+   a link only. Everything fits in 120 000 characters, base64 included.
+5. Creates a public download link, `<NUXT_PUBLIC_APP_URL>/api/media/<token>`,
+   valid for 1 hour and 20 downloads, for the model to hand to the user. Opening
+   it shows a page with a Download button; only the button fetches the file. Each
+   call makes a new link, and the link stops working when its token is revoked,
+   loses the connection or the tool, or loses the chat. Without
+   `NUXT_PUBLIC_APP_URL` the tool still reads, and says there is no link.
+
+Verified original bytes are kept in the server's memory for 10 minutes
+(`NUXT_WHATSAPP_MEDIA_CACHE_BYTES`, default 50 MB, `0` turns it off), so a second
+call or opening the link right after does not ask WhatsApp again. Nothing is
+written to disk or to the database.
+
+Failures say what happened: a file WhatsApp no longer serves ("it may have
+expired; ask the sender to send it again"), no answer within 30 s, and, when the
+live account state is not `open`, that the account is disconnected. The public
+link page never states the account's state.
+
+Things to know:
+
+- Evolution has no size limit of its own and `fileLength` is written by the
+  sender, so a message that lies about its size makes Evolution load the real
+  file; the tool's cap protects this server's memory, not Evolution's. That gap
+  exists for anyone holding an instance key.
+- Your reverse proxy (Traefik on Coolify, Railway) logs the request path, and the
+  link's secret is in the path. The app redacts it from its own logs, not from the
+  proxy's.
+- It needs `sharp` and `unpdf`, which ship in the published images.
+
 ## Importing existing history
 
 WhatsApp hands over past conversations **once**, in a burst it pushes while a
@@ -167,7 +224,8 @@ recv 412 chats, 1180 contacts, 39204 msgs (is latest: false, progress: 34%), typ
 Caveats worth knowing before you rely on it:
 
 - **Media is not downloaded.** History gives message records; the bytes still need
-  `getBase64FromMediaMessage` per message.
+  `getBase64FromMediaMessage` per message, which is what
+  [`get-message-media`](#attachments-get-message-media) does on request.
 - **Depth is whatever the phone volunteers.** `syncFullHistory` asks for
   everything; it is not a guarantee of everything.
 - **Groups come too.** `syncFullHistory` overrides Evolution's group filter, so

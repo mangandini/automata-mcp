@@ -17,7 +17,7 @@
 | N2 | `get-group-info` (participantes, admins, descripción) | Nuevo | Media | ⬜ |
 | N3 | `list-unread` (pendientes) | Nuevo | Media | ✅ |
 | M3 | `send-text-message`: enviar a grupos (`jid`) y citar | Mejora | Media | ⬜ |
-| N4 | `get-message-media` (descargar adjuntos) | Nuevo | Baja | ⬜ |
+| N4 | `get-message-media` (descargar adjuntos) | Nuevo | Baja | 🔧 en rama `feat/e-media` (falta verificar en producción) |
 | M4 | Rechazar argumentos desconocidos en **todos** los tools (global) | Mejora | Baja | ⬜ |
 | X1 | Conector único para varios números | — | — | ⛔ |
 
@@ -222,30 +222,31 @@ Los tres fallos silenciosos (acentos, número mal formado, argumentos ignorados)
 - 2026-11-04 — nota del lote B: `resolveChatTarget` (usado por `read-messages`/`search-messages` con un número como `jid`) paga una consulta a `relatedChatJids` por llamada, que recorre las filas de la cuenta (único índice: `instanceId`). Ese coste por página/por llamada pasa al lote F, no al M3.
 - 2026-11-04 — lote D, hallazgo F5 (a resolver en D, no en B): en el camino de envío `assertNumberAllowed` (`mcp-scope.ts`) deja pasar tal cual el 422 de `resolveNumberToJid` cuando Evolution no resuelve el número, pero responde 403 (`assertChatAllowed`) cuando lo resuelve y está fuera del scope. Un token con scope de chats puede así distinguir "número que no resuelve" de "número que existe pero fuera de mi scope" = oráculo para sondear números. Las lecturas ya lo evitan (`resolveChatTarget` responde un único `NOT_ACCESSIBLE` a token acotado). Al tocar el envío en D, unificar el error para tokens acotados.
 
-## N4 · `get-message-media` — Media · ⬜
+## N4 · `get-message-media` — Media · 🔧
 
 **Problema (caso real, 2026-10-22, conexión CL).** Un monto que el usuario necesitaba no estaba escrito en ningún mensaje: estaba en un documento adjunto (`[document] ….xlsx`, mensaje de 2026-05-14) y en capturas `[image]` de transferencias (2026-05-19) de un chat 1:1. Con los tools actuales solo se ve el nombre del archivo y el id; no hay forma de bajarlo por MCP. Los adjuntos son a menudo donde está el dato (cotizaciones, comprobantes, circulares del colegio).
 
-**Propuesta.** Tool de lectura `get-message-media { messageId }` → bloques `image` / `resource` vía `content: [...]`, mismo patrón que `imap/get-email-attachment.ts`.
+**Propuesta (según la spec del lote E).** Tool de lectura **opt-in** `get-message-media { messageId }`: imagen → bloque `image` reducido; PDF → texto extraído; cualquier otro documento (xlsx, docx, …) → **solo metadatos + enlace de descarga**, sin bloques `resource` (Claude.ai no los lee de forma fiable). Cada llamada crea un enlace público temporal (1 h, 20 descargas) que el modelo entrega al usuario.
 
 **Base existente.** Evolution `POST /chat/getBase64FromMediaMessage/{instance}` con el `key.id`; `get-email-attachment` (bloques de contenido, tope de tamaño).
 
 **Cuidados.**
-- `assertChatAllowed` sobre el chat **del mensaje** (leer `remoteJid` de la fila antes de descargar), no sobre un argumento.
+- Scope como predicado en SQL sobre el `remoteJid` de la fila (sin argumento de chat), antes de descargar o leer la caché.
 - Tope configurable tipo `NUXT_IMAP_ATTACHMENT_MAX_BYTES`; rechazar por tamaño declarado antes de descargar y re-verificar en bytes.
 - Opt-in por scope de tools (privacidad).
 - Medios antiguos pueden haber **expirado** en los servidores de WhatsApp: error explícito y honesto, nunca respuesta vacía.
 - No hacer descargas puntuales fuera del MCP con la API key de la instancia (alternativa evaluada y descartada).
 
 **Criterios de aceptación.**
-- CL: descargar el `.xlsx` del mensaje de 2026-05-14 del caso anterior y devolverlo como `resource`.
+- CL: el `.xlsx` del mensaje de 2026-05-14 del caso anterior → metadatos + enlace de descarga (no se lee dentro); una captura `[image]` de transferencia → el modelo la ve y lee el monto.
 - Medio expirado → error explícito que lo dice.
-- Mensaje de un chat fuera del scope del token → rechazado igual que `read-messages`.
-- Medio sobre el tope → rechazado antes de descargar.
+- Mensaje de un chat fuera del scope del token → el mismo 404 único que un id inexistente (no el 403 de `read-messages`: aquí el id no debe poder sondearse).
+- Medio sobre el tope de enlace (25 MB) → rechazado antes de descargar; sobre el de lectura (10 MB) → solo enlace.
 
 **Log.**
 - 2026-10-22 — evaluado.
 - 2026-10-22 — caso real en CL (adjunto .xlsx + capturas con el monto buscado); prioridad Baja → Media. Orden de lotes sin cambio (E sigue después de D); reconsiderar adelantarlo si aparecen más casos.
+- 2026-11-04 — lote E: implementado en `feat/e-media` (tool `get-message-media`, opt-in, `media-read.ts`, ruta pública `/api/media/<token>`); pendiente la verificación en producción con un adjunto real (criterios con CL).
 
 ## M4 · Rechazar argumentos desconocidos en todos los tools — Baja · ⬜
 
