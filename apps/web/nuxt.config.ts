@@ -1,3 +1,5 @@
+import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
 import tailwindcss from '@tailwindcss/vite'
 import { WHATSAPP_INSTRUCTIONS } from './server/utils/mcp-instructions'
 
@@ -31,6 +33,11 @@ export default defineNuxtConfig({
   modules: ['shadcn-nuxt', '@nuxtjs/mcp-toolkit'],
 
   nitro: {
+    // The PDF worker (server/utils/media-pdf.ts) imports `unpdf` from a string of
+    // source, which the bundler cannot see: without this, `unpdf` is missing from
+    // `.output/server/node_modules` and every PDF read fails there. An absolute
+    // path, because a bare name is handed back as external and never traced.
+    externals: { traceInclude: [join(dirname(createRequire(import.meta.url).resolve('unpdf')), 'index.mjs')] },
     experimental: {
       // Required. MCP tool handlers are invoked by the MCP SDK and receive its
       // `RequestHandlerExtra` — not an H3 event. `useEvent()` is the only way to

@@ -1,7 +1,7 @@
 /**
  * Shrinks a WhatsApp image to something that fits the tool response. Imports
- * only `sharp` and `media-budget.ts` (explicit `.ts`), so a plain `node` loads
- * it for checks.
+ * only `sharp`, `media-budget.ts` and `message-payload.ts` (explicit `.ts`), so a
+ * plain `node` loads it for checks.
  *
  * Two hazards drive the shape. A small file can declare a huge canvas (a few
  * hundred bytes of PNG header claiming 30 000 x 30 000 px is ~2.7 GB once
@@ -79,6 +79,24 @@ function declaredSize(bytes: Buffer): { width: number, height: number } | undefi
   return undefined
 }
 
+/**
+ * PNG text chunks (tEXt, zTXt, iTXt) and a late eXIf chunk. sharp 0.35 does not
+ * report text chunks at all (`metadata.comments` stays undefined for them), and
+ * they are free text that tools use for coordinates, device and author, so the
+ * chunk list is read here. Bounded by the file: one step per chunk header.
+ */
+function pngHasTextChunks(bytes: Buffer): boolean {
+  if (detectImageMime(bytes) !== 'image/png') return false
+  let pos = 8
+  while (pos + 8 <= bytes.length) {
+    const type = bytes.toString('latin1', pos + 4, pos + 8)
+    if (type === 'tEXt' || type === 'zTXt' || type === 'iTXt' || type === 'eXIf') return true
+    if (type === 'IEND') break
+    pos += 12 + bytes.readUInt32BE(pos)
+  }
+  return false
+}
+
 /** EXIF orientations 5-8 store the picture on its side. */
 function isSideways(orientation: number | undefined): boolean {
   return orientation !== undefined && orientation >= 5 && orientation <= 8
@@ -93,8 +111,9 @@ export async function prepareImageForModel(bytes: Buffer): Promise<PreparedImage
   let metadata: Metadata
   try {
     metadata = await open().metadata()
-  } catch {
-    return { ok: false, reason: 'unreadable' }
+  } catch (error) {
+    // A format `declaredSize` does not parse: sharp's own limit says the same thing.
+    return { ok: false, reason: /pixel limit/i.test(String((error as Error)?.message)) ? 'pixel-cap' : 'unreadable' }
   }
   const { width: storedWidth, height: storedHeight } = metadata
   // 0 or missing would plan a zero-sized ladder; a header with no size is no image.
@@ -107,29 +126,34 @@ export async function prepareImageForModel(bytes: Buffer): Promise<PreparedImage
 
   // Anything that can carry where or with what a picture was taken disqualifies
   // the untouched original; `exif` is the contract, XMP and IPTC are the same
-  // kind of data in other containers.
-  const carriesMetadata = Boolean(metadata.exif || metadata.xmp || metadata.iptc || metadata.tifftagPhotoshop)
+  // kind of data in other containers, and PNG text chunks are free text that tools
+  // use for exactly this (coordinates, device, author).
+  const carriesMetadata = Boolean(metadata.exif || metadata.xmp || metadata.iptc || metadata.tifftagPhotoshop || metadata.comments?.length || pngHasTextChunks(bytes))
 
   const originalMime = detectImageMime(bytes)
   let result
-  let output: Metadata | undefined
+  let output: { width: number, height: number } | undefined
   try {
     result = await runImageLadder({
       width: originalWidth,
       height: originalHeight,
       original: { bytes: bytes.length, usable: !carriesMetadata && originalMime !== undefined },
       budgetBytes: imageByteBudget(),
-      encode: (attempt: ImageAttempt) => open()
-        .rotate()
-        .resize({ width: attempt.maxSide, height: attempt.maxSide, fit: 'inside', withoutEnlargement: true })
-        .flatten({ background: '#ffffff' })
-        .jpeg({ quality: attempt.quality, mozjpeg: true })
-        .toBuffer()
+      encode: async (attempt: ImageAttempt) => {
+        const { data, info } = await open()
+          .rotate()
+          .resize({ width: attempt.maxSide, height: attempt.maxSide, fit: 'inside', withoutEnlargement: true })
+          .flatten({ background: '#ffffff' })
+          .jpeg({ quality: attempt.quality, mozjpeg: true })
+          .toBuffer({ resolveWithObject: true })
+        // The ladder stops at the first encoding that fits, so the last one is the one returned.
+        output = { width: info.width, height: info.height }
+        return data
+      }
     })
     // The header alone does not prove the body decodes, and step 0 never
     // decodes: a cut-off file would otherwise reach the model as "the image".
     if (result?.attempt.step === 0) await open().stats()
-    if (result?.bytes) output = await sharp(result.bytes).metadata()
   } catch {
     return { ok: false, reason: 'unreadable' }
   }
@@ -144,8 +168,8 @@ export async function prepareImageForModel(bytes: Buffer): Promise<PreparedImage
     mimeType: 'image/jpeg',
     bytes: result.bytes!,
     step: result.attempt.step,
-    width: output!.width!,
-    height: output!.height!,
+    width: output!.width,
+    height: output!.height,
     originalWidth,
     originalHeight
   }
