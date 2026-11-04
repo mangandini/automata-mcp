@@ -88,7 +88,7 @@ export function classifyEvolutionFailure(input: { status?: number, text?: string
   if (input.timedOut) return 'timeout'
   const text = input.text ?? ''
   if (/message not found/i.test(text) || /not of the media type/i.test(text)) return 'internal'
-  if (/failed to fetch stream from/i.test(text) || /status code (404|410)\b/i.test(text)) return 'expired'
+  if (/failed to fetch stream from|status code (404|410)\b/i.test(text)) return 'expired'
   return 'unknown'
 }
 
