@@ -85,10 +85,16 @@ export async function resolveChatTarget(
   // Almost half of the 1:1 chats live under a `@lid` JID, and the resolved
   // number only gives the phone form. `relatedChatJids` adds the forms history
   // links to it; it can come back empty (the link exists only on live rows).
-  const forms = [resolved.jid, ...await relatedChatJids(instance, resolved.jid)]
+  // The allowlist goes into the query itself, so rows of chats outside the scope
+  // cannot decide what this call returns; the filter below is the second line.
+  const allowed = scope.allChats ? undefined : scope.chatJids
+  const forms = [resolved.jid, ...await relatedChatJids(instance, resolved.jid, allowed)]
   const jids = [...new Set(forms)].filter(jid => isChatAllowed(scope, jid))
   if (!jids.length) {
-    throw notFound(`The number ${digits} has a WhatsApp account, but this token is not scoped to any of its chats.`)
+    // Always the uniform text: this is reachable only by a scoped token (an
+    // unrestricted one has every form in scope), so a specific message here
+    // could only ever be a leak if `hide` changed.
+    throw createError({ statusCode: 404, message: NOT_ACCESSIBLE })
   }
 
   return { jids, fromNumber: true }

@@ -429,29 +429,56 @@ export async function searchMessages(
  * `MessageKey`). Callers must say so rather than treat an empty answer as "there
  * is only one form".
  *
+ * Scope. `allowed` is the token's chat allowlist (`undefined` = every chat). It
+ * is a predicate here, not a filter on what comes back: otherwise whether a form
+ * survives would depend on rows of chats the token does not reach, and a scoped
+ * token could use that to test whether a number belongs to an in-scope `@lid`
+ * chat, or to learn that an out-of-scope phone chat exists. The first arm
+ * (`remoteJidAlt = jid`) only returns in-scope `remoteJid`s. The second arm reads
+ * the rows stored under `jid` itself, so it runs only when `jid` is in scope.
+ * What remains is the first arm reading in-scope rows' `remoteJidAlt`: a scoped
+ * `@lid` chat can be reached by the phone number it is linked to. That is the
+ * convenience this exists for and it exposes nothing outside the allowlist.
+ *
  * Cost: `"instanceId"` is the only index on `"Message"`, so this scans the
  * account's rows. That is why it is meant to run once per number-addressed call,
  * never per page, and why it selects DISTINCT values with a `LIMIT` — a 1:1 chat
  * has a handful of forms, and an unbounded result would only ever be a bug.
+ * Ordered, so the cap cuts the same forms on every call.
  */
-export async function relatedChatJids(instance: AppInstance, jid: string): Promise<string[]> {
+export async function relatedChatJids(
+  instance: AppInstance,
+  jid: string,
+  allowed?: string[],
+): Promise<string[]> {
   const sql = await evolutionDbFor(instance)
   const instanceId = await resolveEvolutionInstanceId(instance)
+
+  // Arm 2 reads rows stored under `jid`: only for a chat the token reaches.
+  const readsOwnRows = allowed === undefined || allowed.includes(jid)
 
   let rows: Array<{ jid: string | null }>
   try {
     rows = await sql<Array<{ jid: string | null }>>`
-      SELECT DISTINCT m.key->>'remoteJid' AS jid
-      FROM "Message" m
-      WHERE m."instanceId" = ${instanceId}
-        AND m.key->>'remoteJidAlt' = ${jid}
-        AND (m.key->>'remoteJid' LIKE '%@s.whatsapp.net' OR m.key->>'remoteJid' LIKE '%@lid')
-      UNION
-      SELECT DISTINCT m.key->>'remoteJidAlt' AS jid
-      FROM "Message" m
-      WHERE m."instanceId" = ${instanceId}
-        AND m.key->>'remoteJid' = ${jid}
-        AND (m.key->>'remoteJidAlt' LIKE '%@s.whatsapp.net' OR m.key->>'remoteJidAlt' LIKE '%@lid')
+      SELECT forms.jid
+      FROM (
+        SELECT DISTINCT m.key->>'remoteJid' AS jid
+        FROM "Message" m
+        WHERE m."instanceId" = ${instanceId}
+          AND m.key->>'remoteJidAlt' = ${jid}
+          AND (m.key->>'remoteJid' LIKE '%@s.whatsapp.net' OR m.key->>'remoteJid' LIKE '%@lid')
+          ${allowed === undefined ? sql`` : sql`AND m.key->>'remoteJid' = ANY(${allowed}::text[])`}
+        ${readsOwnRows
+          ? sql`
+        UNION
+        SELECT DISTINCT m.key->>'remoteJidAlt' AS jid
+        FROM "Message" m
+        WHERE m."instanceId" = ${instanceId}
+          AND m.key->>'remoteJid' = ${jid}
+          AND (m.key->>'remoteJidAlt' LIKE '%@s.whatsapp.net' OR m.key->>'remoteJidAlt' LIKE '%@lid')`
+          : sql``}
+      ) forms
+      ORDER BY forms.jid
       LIMIT 20
     `
   }
