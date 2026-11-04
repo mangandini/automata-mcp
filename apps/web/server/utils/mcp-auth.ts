@@ -68,10 +68,9 @@ export interface McpTokenFacts extends Pick<AppMcpToken,
 export type TokenLookup = { hash: string } | { id: string }
 
 /**
- * The token's row joined to everything that decides whether it still works —
- * the single copy of that query, shared by every caller that has to answer "may
- * this token be used right now". It only reads: what a missing piece means, and
- * which failure it maps to, stays with the caller (see `resolveMcpAuth`).
+ * The single copy of the token-facts query, for every caller that has to answer
+ * "may this token be used right now". It only reads: what a missing piece means,
+ * and which failure it maps to, stays with the caller (see `resolveMcpAuth`).
  *
  * `assigned` is about the token's own `instance`, and `member_org` is the org of
  * the holder's membership: a caller compares that against the org of the
