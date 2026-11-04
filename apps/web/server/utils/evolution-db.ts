@@ -356,7 +356,7 @@ export async function searchMessages(
           ${until === undefined ? sql`` : sql`AND m."messageTimestamp" <= ${until}`}
           ${options.fromMe === undefined ? sql`` : sql`AND (m.key->>'fromMe')::boolean = ${options.fromMe}`}
           ${authorPredicate(sql, options.author)}
-          ${options.includeReactions ? sql`` : sql`AND m.message->'reactionMessage' IS NULL`}
+          ${options.includeReactions ? sql`` : sql`AND r."reactionMessage" IS NULL`}
           -- Control records are excluded by intent, not only by accident. Today
           -- this is a no-op: no arm above reads anything out of a non-edit
           -- protocolMessage, so such a row has no body and no filename, and the
@@ -366,8 +366,8 @@ export async function searchMessages(
           -- came from the edit arms has editedMessage non-null. Never let this
           -- grow into something that inspects where the body came from; that is
           -- where it would start dropping real edits.
-          AND (m.message->'protocolMessage' IS NULL
-               OR m.message->'protocolMessage'->'editedMessage' IS NOT NULL)
+          AND (r."protocolMessage" IS NULL
+               OR r."protocolMessage"->'editedMessage' IS NOT NULL)
         ORDER BY m.key->>'id', named DESC, m."messageTimestamp" DESC, "rowId"
       )
       SELECT key, "pushName", "messageType", "messageTimestamp", body, filename, mentioned, "editOf",
@@ -764,34 +764,52 @@ interface AroundRow extends MessageRecord { side: 'older' | 'anchor' | 'newer', 
  * reads one definition while a listing reads another is a set of results that
  * cannot be paged.
  *
- * Two things here are about cost, not meaning. The lookups are wrapped in a
- * function (`jsonb_to_record` over a one-row object) so that they run once per
- * row. Written as plain expressions, Postgres pastes them into every place `t`
- * is read — the not-null test, the fold (which reads its input several times),
- * the select list — and a message that is not plain text pays for its ~30
- * `jsonb` lookups each time: a large `message` is TOASTed and every lookup
- * fetches it again. A function scan cannot be pasted. (`OFFSET 0` on a subquery
- * does the same and is a little cheaper on a single core, but Postgres never
- * runs a subquery scan inside a parallel worker, so it kept this stage in the
- * leader: 2.4x the old time with parallel workers against 1.2x with this.)
+ * Two things here are about cost, not meaning. Both come from one fact: a
+ * `message` that carries media is large (thumbnails, media keys, link previews)
+ * and so TOASTed, and Postgres detoasts — fetches and
+ * decompresses — it again for **every** `->` / `->>` / `?|` that reads it. The
+ * ~30 arms of a body that has no caption therefore decompressed the same
+ * payload ~30 times, per message, over the whole account. So:
+ *
+ *  1. `r` reads the payload once. `jsonb_to_record` pulls the ten top-level
+ *     keys every arm starts from into in-memory `jsonb` values; every later
+ *     lookup (the arms, and the reaction / control-record predicates in
+ *     `searchMessages`, which read `r` too) works on those copies and never
+ *     touches the TOASTed column again. A function scan, not `OFFSET 0`, so the
+ *     stage can still run inside a parallel worker. The `CASE` is not
+ *     decoration: `jsonb_to_record` raises on a payload that is not an object
+ *     (where `->` returns NULL), and one stray row must not fail the account's
+ *     whole search. A JSON `null` under one of the ten keys reads as SQL NULL
+ *     here and as the non-NULL `'null'` through `->`: for the arms that changes
+ *     nothing (they return NULL either way), and the reaction / control-record
+ *     predicates of `searchMessages` therefore treat such a key as absent (Evolution
+ *     never writes one; `listMessagesPage` keeps the plain `->` test).
+ *  2. `t` is a plain subquery that Postgres pastes into each place it is read.
+ *     That is fine now — the arms run on small in-memory values — and cheaper
+ *     than a second function scan per row, which an earlier version used to keep
+ *     the arms from being re-evaluated (needed only while each evaluation
+ *     re-decompressed the payload).
+ *
  * The cheap predicates on `m` still run first, so only rows that survived them
- * pay. And the file name is
- * looked up only for messages that have one of the four top-level keys every
- * file-name arm starts from; for the rest — most of them — it was ten lookups
- * that could only return NULL. The gate is a superset test, so it can be wrong
- * only by running the arms for nothing, never by skipping one.
+ * pay. The file name is looked up only for messages that have one of the four
+ * top-level keys every file-name arm starts from; for the rest it would be ten
+ * lookups that can only return NULL. The gate is a superset test, so it can be
+ * wrong only by running the arms for nothing, never by skipping one.
  */
 function messageBodyJoin(sql: Sql) {
   return sql`
-    CROSS JOIN LATERAL jsonb_to_record(jsonb_build_object('body', COALESCE(
-        m.message->>'conversation',
-        m.message->'extendedTextMessage'->>'text',
-        m.message->'imageMessage'->>'caption',
-        m.message->'videoMessage'->>'caption',
-        m.message->'documentMessage'->>'caption',
-        m.message->'documentWithCaptionMessage'->'message'->'documentMessage'->>'caption',
-        m.message->>'speechToText',
-        m.message->'reactionMessage'->>'text',
+    CROSS JOIN LATERAL jsonb_to_record(
+      CASE WHEN jsonb_typeof(m.message) = 'object' THEN m.message ELSE '{}'::jsonb END
+    ) AS r("conversation" jsonb, "extendedTextMessage" jsonb, "imageMessage" jsonb, "videoMessage" jsonb, "documentMessage" jsonb, "documentWithCaptionMessage" jsonb, "speechToText" jsonb, "reactionMessage" jsonb, "associatedChildMessage" jsonb, "protocolMessage" jsonb)
+    CROSS JOIN LATERAL (SELECT COALESCE(
+        (r."conversation" #>> '{}'),
+        r."extendedTextMessage"->>'text',
+        r."imageMessage"->>'caption',
+        r."videoMessage"->>'caption',
+        r."documentMessage"->>'caption',
+        r."documentWithCaptionMessage"->'message'->'documentMessage'->>'caption',
+        (r."speechToText" #>> '{}'),
+        r."reactionMessage"->>'text',
         -- Album media and captioned video from an official WhatsApp client
         -- arrive wrapped: associatedChildMessage is a FutureProofMessage,
         -- a transparent { message: Message }, which the rc.9 Baileys that
@@ -799,48 +817,48 @@ function messageBodyJoin(sql: Sql) {
         -- jsonb path would also match contextInfo.quotedMessage.conversation
         -- and make a reply findable by the text it quoted, which is
         -- misattribution by construction.
-        m.message->'associatedChildMessage'->'message'->>'conversation',
-        m.message->'associatedChildMessage'->'message'->'extendedTextMessage'->>'text',
-        m.message->'associatedChildMessage'->'message'->'imageMessage'->>'caption',
-        m.message->'associatedChildMessage'->'message'->'videoMessage'->>'caption',
-        m.message->'associatedChildMessage'->'message'->'documentMessage'->>'caption',
+        r."associatedChildMessage"->'message'->>'conversation',
+        r."associatedChildMessage"->'message'->'extendedTextMessage'->>'text',
+        r."associatedChildMessage"->'message'->'imageMessage'->>'caption',
+        r."associatedChildMessage"->'message'->'videoMessage'->>'caption',
+        r."associatedChildMessage"->'message'->'documentMessage'->>'caption',
         -- A plaintext edit (protocolMessage.type = 14). In history-synced
         -- data this row is the ONLY copy of the edited text — nothing patches
         -- the original — so without these arms the new wording is unfindable.
-        m.message->'protocolMessage'->'editedMessage'->>'conversation',
-        m.message->'protocolMessage'->'editedMessage'->'extendedTextMessage'->>'text',
-        m.message->'protocolMessage'->'editedMessage'->'imageMessage'->>'caption',
-        m.message->'protocolMessage'->'editedMessage'->'videoMessage'->>'caption',
-        m.message->'protocolMessage'->'editedMessage'->'documentMessage'->>'caption',
+        r."protocolMessage"->'editedMessage'->>'conversation',
+        r."protocolMessage"->'editedMessage'->'extendedTextMessage'->>'text',
+        r."protocolMessage"->'editedMessage'->'imageMessage'->>'caption',
+        r."protocolMessage"->'editedMessage'->'videoMessage'->>'caption',
+        r."protocolMessage"->'editedMessage'->'documentMessage'->>'caption',
         -- Both at once: a caption edit on an album item.
-        m.message->'associatedChildMessage'->'message'->'protocolMessage'->'editedMessage'->>'conversation',
-        m.message->'associatedChildMessage'->'message'->'protocolMessage'->'editedMessage'->'extendedTextMessage'->>'text',
-        m.message->'associatedChildMessage'->'message'->'protocolMessage'->'editedMessage'->'imageMessage'->>'caption',
-        m.message->'associatedChildMessage'->'message'->'protocolMessage'->'editedMessage'->'videoMessage'->>'caption',
-        m.message->'associatedChildMessage'->'message'->'protocolMessage'->'editedMessage'->'documentMessage'->>'caption'
+        r."associatedChildMessage"->'message'->'protocolMessage'->'editedMessage'->>'conversation',
+        r."associatedChildMessage"->'message'->'protocolMessage'->'editedMessage'->'extendedTextMessage'->>'text',
+        r."associatedChildMessage"->'message'->'protocolMessage'->'editedMessage'->'imageMessage'->>'caption',
+        r."associatedChildMessage"->'message'->'protocolMessage'->'editedMessage'->'videoMessage'->>'caption',
+        r."associatedChildMessage"->'message'->'protocolMessage'->'editedMessage'->'documentMessage'->>'caption'
         -- speechToText and reactionMessage are not repeated in the nested
         -- groups: Evolution writes the first at top level only, and a reaction
         -- is never an album child or an edit target. COALESCE short-circuits,
         -- so an ordinary text row still stops at the first arm — the extra
         -- lookups are paid only by rows that produce no body at all, which
         -- this scan already touches and discards.
-      ),
+      ) AS body,
       -- The file name of a document, so "contrato.pdf" is findable although the
       -- document has no caption. fileName first, title as the fallback some
       -- clients fill instead. Explicit paths only, for the reason above; the
       -- same wrappers as the body arms.
-      'filename', CASE WHEN m.message ?| ARRAY['documentMessage', 'documentWithCaptionMessage', 'associatedChildMessage', 'protocolMessage'] THEN COALESCE(
-        m.message->'documentMessage'->>'fileName',
-        m.message->'documentMessage'->>'title',
-        m.message->'documentWithCaptionMessage'->'message'->'documentMessage'->>'fileName',
-        m.message->'documentWithCaptionMessage'->'message'->'documentMessage'->>'title',
-        m.message->'associatedChildMessage'->'message'->'documentMessage'->>'fileName',
-        m.message->'associatedChildMessage'->'message'->'documentMessage'->>'title',
-        m.message->'protocolMessage'->'editedMessage'->'documentMessage'->>'fileName',
-        m.message->'protocolMessage'->'editedMessage'->'documentMessage'->>'title',
-        m.message->'associatedChildMessage'->'message'->'protocolMessage'->'editedMessage'->'documentMessage'->>'fileName',
-        m.message->'associatedChildMessage'->'message'->'protocolMessage'->'editedMessage'->'documentMessage'->>'title'
-      ) END)) AS t(body text, filename text)`
+      CASE WHEN (r."documentMessage" IS NOT NULL OR r."documentWithCaptionMessage" IS NOT NULL OR r."associatedChildMessage" IS NOT NULL OR r."protocolMessage" IS NOT NULL) THEN COALESCE(
+        r."documentMessage"->>'fileName',
+        r."documentMessage"->>'title',
+        r."documentWithCaptionMessage"->'message'->'documentMessage'->>'fileName',
+        r."documentWithCaptionMessage"->'message'->'documentMessage'->>'title',
+        r."associatedChildMessage"->'message'->'documentMessage'->>'fileName',
+        r."associatedChildMessage"->'message'->'documentMessage'->>'title',
+        r."protocolMessage"->'editedMessage'->'documentMessage'->>'fileName',
+        r."protocolMessage"->'editedMessage'->'documentMessage'->>'title',
+        r."associatedChildMessage"->'message'->'protocolMessage'->'editedMessage'->'documentMessage'->>'fileName',
+        r."associatedChildMessage"->'message'->'protocolMessage'->'editedMessage'->'documentMessage'->>'title'
+      ) END AS filename) AS t`
 }
 
 /**
@@ -948,7 +966,7 @@ export async function distinctSenders(
  * a text with no character of a stage is unchanged by that stage's `translate`.
  *
  * `expr` appears several times in the SQL this builds. Pass a column, or an
- * expression the planner evaluates once per row (see `messageBodyJoin`).
+ * expression that is cheap to repeat (see `messageBodyJoin`: `t` reads in-memory values).
  */
 function fold(sql: Sql, expr: ReturnType<Sql>) {
   const upTo = (last: number) => SQL_FOLD_STAGES
