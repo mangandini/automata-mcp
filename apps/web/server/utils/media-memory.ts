@@ -187,26 +187,37 @@ function trimKeys<V>(map: Map<string, V>, isExpired: (value: V) => boolean): voi
 }
 
 /**
- * "Do not ask again for a while", per key. Set after Evolution timed out on a
- * message: asking again at once would only pile a second 30 s wait behind the
- * first.
+ * "Do not ask again for a while", per key, remembering why. Set after a
+ * download of a message failed in a way that asking again at once would only
+ * repeat (Evolution timed out, WhatsApp said the file is gone, or the answer was
+ * one we do not recognise), so a caller retrying in a loop cannot turn into a
+ * re-upload request to the phone on every try. `cause` is what the caller is
+ * told while it lasts.
  */
-export function createCooldown(ms: number, now: Clock = Date.now) {
-  const until = new Map<string, number>()
+export function createCooldown<C = undefined>(ms: number, now: Clock = Date.now) {
+  const until = new Map<string, { end: number, cause: C }>()
+
+  function active(key: string): { end: number, cause: C } | undefined {
+    const entry = until.get(key)
+    if (entry === undefined) return undefined
+    if (entry.end > now()) return entry
+    until.delete(key)
+    return undefined
+  }
 
   return {
-    start(key: string): void {
+    start(key: string, cause: C): void {
       const at = now()
-      touch(until, key, at + ms)
-      if (until.size > MAX_KEYS) trimKeys(until, end => end <= at)
+      touch(until, key, { end: at + ms, cause })
+      if (until.size > MAX_KEYS) trimKeys(until, entry => entry.end <= at)
     },
     remainingMs(key: string): number {
-      const end = until.get(key)
-      if (end === undefined) return 0
-      const left = end - now()
-      if (left > 0) return left
-      until.delete(key)
-      return 0
+      const entry = active(key)
+      return entry === undefined ? 0 : entry.end - now()
+    },
+    /** Why `key` is cooling down, or `undefined` when it is not. */
+    causeOf(key: string): C | undefined {
+      return active(key)?.cause
     }
   }
 }

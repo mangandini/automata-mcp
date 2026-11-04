@@ -8,8 +8,8 @@ import { getInstanceStatus } from './instances'
 import { parseEvolutionMediaBody, readBodyCapped, readBodyPrefix, sha256Matches } from './media-body.ts'
 import type { EvolutionMedia } from './media-body.ts'
 import { cacheBytesFrom, linkCapFrom, MEDIA_READ_CAP_BYTES, maxResponseBodyBytes } from './media-budget.ts'
-import { classifyEvolutionFailure, evolutionErrorText, MediaError, mediaFailureMessage } from './media-errors.ts'
-import type { MediaFailureKind } from './media-errors.ts'
+import { classifyEvolutionFailure, cooldownFailureMessage, evolutionErrorText, isCooldownCause, MediaError, mediaFailureMessage } from './media-errors.ts'
+import type { CooldownCause, MediaFailureKind } from './media-errors.ts'
 import { createCooldown, createInflight, createMediaCache, createSemaphore, mediaCacheKey } from './media-memory.ts'
 import type { MediaCacheEntry } from './media-memory.ts'
 import type { JsonRecord } from './message-payload.ts'
@@ -25,7 +25,14 @@ import type { JsonRecord } from './message-payload.ts'
 
 /** Evolution's re-upload request to the phone has no timeout of its own, so we bound it. */
 const DOWNLOAD_TIMEOUT_MS = 30_000
-/** After a timeout the phone's re-upload is still pending in Evolution; asking again only queues behind it. */
+/**
+ * After a timeout the phone's re-upload is still pending in Evolution, and
+ * asking again only queues behind it; after `expired` or `unknown` every new
+ * ask is another re-upload request to the user's phone with the same likely
+ * outcome. So all three put the message on this cooldown (`isCooldownCause`),
+ * for the tool and the link alike: a link whose fetch keeps failing refunds its
+ * claim each time, so the download allowance alone would not bound it.
+ */
 const COOLDOWN_MS = 2 * 60_000
 /** Absolute from the moment the entry was stored; a read never extends it. */
 const CACHE_TTL_MS = 10 * 60_000
@@ -57,7 +64,7 @@ const semaphore = createSemaphore(MAX_CONCURRENT, SLOT_WAIT_MS)
 // One PDF worker at a time: a hostile file can take a worker to ~450 MB, and two
 // of them were measured at 860-940 MiB together, which leaves nothing at 1 GiB.
 const pdfSemaphore = createSemaphore(1, SLOT_WAIT_MS)
-const cooldown = createCooldown(COOLDOWN_MS)
+const cooldown = createCooldown<CooldownCause>(COOLDOWN_MS)
 const inflight = createInflight<EvolutionMedia>()
 
 /**
@@ -139,8 +146,9 @@ export function evictMediaForInstance(instanceId: string): number {
   return mediaCache().evictInstance(instanceId)
 }
 
-function failure(kind: MediaFailureKind, extra?: { retryAfterSec?: number, evolutionText?: string }): MediaError {
-  return new MediaError(kind, mediaFailureMessage(kind).message, extra)
+function failure(kind: MediaFailureKind, extra?: { retryAfterSec?: number, cooldownCause?: CooldownCause, evolutionText?: string }): MediaError {
+  const { message } = kind === 'cooldown' ? cooldownFailureMessage(extra?.cooldownCause) : mediaFailureMessage(kind)
+  return new MediaError(kind, message, extra)
 }
 
 async function lead(
@@ -150,7 +158,7 @@ async function lead(
   maxBytes: number,
 ): Promise<EvolutionMedia> {
   const remaining = cooldown.remainingMs(cacheKey)
-  if (remaining > 0) throw failure('cooldown', { retryAfterSec: Math.ceil(remaining / 1000) })
+  if (remaining > 0) throw failure('cooldown', { retryAfterSec: Math.ceil(remaining / 1000), cooldownCause: cooldown.causeOf(cacheKey) })
 
   // 409 for a connection with no credentials, before it takes a slot.
   const evolution = evolutionClientForInstance(instance)
@@ -182,8 +190,9 @@ async function lead(
       }
       catch (error) {
         // A 2xx that is not JSON (a proxy's page, say) is nothing we recognise: say what it was.
+        // Status and kind only: the body can hold the file name, the caption and the file itself.
         if (error instanceof MediaError && error.kind === 'unknown') {
-          console.error(`[media] Evolution answered ${response.status} with a body that is not JSON for connection ${instance.id}: ${body.subarray(0, 300).toString('utf8')}`)
+          console.error(`[media] Evolution answered ${response.status} with a body that is not JSON (${error.kind}) for connection ${instance.id}`)
         }
         throw error
       }
@@ -204,17 +213,28 @@ async function lead(
       return media
     }
     catch (error) {
-      if (error instanceof MediaError) throw error
       // A refused host and the like: the app's own H3 errors, passed through.
       if (isError(error)) throw error
-      if (signal.aborted) {
-        cooldown.start(cacheKey)
-        console.error(`[media] Evolution did not answer within ${DOWNLOAD_TIMEOUT_MS / 1000}s for message ${source.key.id} of connection ${instance.id}; cooling down`)
-        throw failure('timeout')
+      let failed: MediaError
+      if (error instanceof MediaError) {
+        failed = error
       }
-      const text = evolutionErrorText(error) || (error instanceof Error ? error.message : '')
-      console.error(`[media] could not reach Evolution for connection ${instance.id}:`, text)
-      throw failure('unknown', { evolutionText: text })
+      else if (signal.aborted) {
+        console.error(`[media] Evolution did not answer within ${DOWNLOAD_TIMEOUT_MS / 1000}s for message ${source.key.id} of connection ${instance.id}`)
+        failed = failure('timeout')
+      }
+      else {
+        const text = evolutionErrorText(error) || (error instanceof Error ? error.message : '')
+        console.error(`[media] could not reach Evolution for connection ${instance.id}:`, text)
+        failed = failure('unknown', { evolutionText: text })
+      }
+      // One place for all three ways to `unknown` (an unrecognised 4xx text, a
+      // 2xx that is not JSON, a network failure) and for `expired` and `timeout`.
+      if (isCooldownCause(failed.kind)) {
+        cooldown.start(cacheKey, failed.kind)
+        console.error(`[media] message ${source.key.id} of connection ${instance.id} cools down for ${COOLDOWN_MS / 60_000} min after ${failed.kind}`)
+      }
+      throw failed
     }
   })
 }
@@ -258,6 +278,7 @@ export async function describeMediaFailure(instance: AppInstance, error: unknown
     console.error(`[media] unexpected failure for connection ${instance.id}:`, error)
     return mediaFailureMessage('internal')
   }
+  if (error.kind === 'cooldown') return cooldownFailureMessage(error.cooldownCause)
   if (error.kind !== 'expired' && error.kind !== 'timeout' && error.kind !== 'unknown') return mediaFailureMessage(error.kind)
 
   const state = await readAccountState(instance)

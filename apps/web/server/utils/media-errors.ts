@@ -23,18 +23,27 @@ export type MediaFailureKind =
   | 'internal'
   | 'unknown'
 
+/** The failures that put a message on the cooldown: asking again at once would only repeat them. */
+export type CooldownCause = 'timeout' | 'expired' | 'unknown'
+export function isCooldownCause(kind: MediaFailureKind): kind is CooldownCause {
+  return kind === 'timeout' || kind === 'expired' || kind === 'unknown'
+}
+
 export class MediaError extends Error {
   kind: MediaFailureKind
-  /** Only for `cooldown`: how long until the same message may be asked again. */
+  /** `cooldown` and `busy`: how long until asking again is worth it. */
   retryAfterSec?: number
+  /** Only for `cooldown`: the failure that started it. */
+  cooldownCause?: CooldownCause
   /** Evolution's own text, kept for the server log; never shown to the model. */
   evolutionText?: string
 
-  constructor(kind: MediaFailureKind, message: string, extra?: { retryAfterSec?: number, evolutionText?: string }) {
+  constructor(kind: MediaFailureKind, message: string, extra?: { retryAfterSec?: number, cooldownCause?: CooldownCause, evolutionText?: string }) {
     super(message)
     this.name = 'MediaError'
     this.kind = kind
     this.retryAfterSec = extra?.retryAfterSec
+    this.cooldownCause = extra?.cooldownCause
     this.evolutionText = extra?.evolutionText
   }
 }
@@ -102,6 +111,23 @@ const MESSAGES: Record<MediaFailureKind, { status: number, message: string }> = 
   empty: { status: 502, message: 'WhatsApp returned no content for this message.' },
   internal: { status: 500, message: 'The file could not be fetched because of an internal error. It has been logged on the server.' },
   unknown: { status: 502, message: 'WhatsApp could not deliver this file and gave no recognisable reason. Try again later.' }
+}
+
+/**
+ * While a message cools down, the answer repeats the failure that started it,
+ * because that is still the truth: a file WhatsApp said is gone is not "busy",
+ * and one that timed out was not refused. The expired one keeps the advice
+ * that helps (ask for it to be sent again).
+ */
+const COOLDOWN_MESSAGES: Record<CooldownCause, string> = {
+  timeout: MESSAGES.cooldown.message,
+  expired: 'This file was requested a moment ago and WhatsApp said it is no longer available (it may have expired). Ask the sender to send it again; asking for it here again within about two minutes gets this same answer.',
+  unknown: 'This file was requested a moment ago and WhatsApp could not deliver it, giving no recognisable reason. Wait about two minutes before asking for it again.',
+}
+
+/** The answer for a message on the cooldown, worded after the failure that started it. */
+export function cooldownFailureMessage(cause: CooldownCause = 'timeout'): { status: number, message: string } {
+  return { status: MESSAGES.cooldown.status, message: COOLDOWN_MESSAGES[cause] }
 }
 
 const DISCONNECTED_CAUSES: ReadonlySet<MediaFailureKind> = new Set(['expired', 'timeout', 'unknown'])
