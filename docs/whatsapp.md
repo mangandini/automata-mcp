@@ -33,6 +33,10 @@ endpoint cannot fix it: it pages with `skip`/`take` over the duplicate rows, so
 the page boundaries are already wrong by the time anything could collapse them.
 `DISTINCT ON (key->>'id')` before `LIMIT` is the fix, and that means SQL.
 
+Searching ignores accents by folding the column in SQL (`translate`) with the same
+table the JavaScript side uses, so it needs no Postgres extension on Evolution's
+database.
+
 Reactions are dropped in the same query, on the payload rather than on
 `messageType`. WhatsApp's own control records cannot be — `messageType` carries no
 subtype, and excluding `protocolMessage` wholesale would delete every message edit

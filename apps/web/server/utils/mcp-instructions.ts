@@ -50,6 +50,16 @@ export const WHATSAPP_INSTRUCTIONS = [
   'does not exist while the response carries `truncated`, `incomplete` or `unnamedGroups`.',
   'Then read it with `read-messages` using `since`. `list-contacts` gives the name and number of',
   'people in the address book.',
+  'Searching ignores case and accents ("jose" finds "José"); by default every word must appear in',
+  'the message, and `match: \'any\'` finds messages containing at least one of several',
+  'alternatives. `jid` also takes a phone number: if that finds nothing, try `list-chats` with the',
+  'person\'s name, since the chat may be stored under an internal `@lid` id. For "what X said in the',
+  'group", pass the group\'s `jid` and `author` (a name or number) to `search-messages` or',
+  '`read-messages`; if the response lists `authorCandidates`, ask the user which person is meant',
+  'rather than choosing. To see what surrounds a hit, call `read-messages` with the hit\'s `jid` and',
+  'its id as `around`.',
+  'Before concluding that nothing was found, follow `hasMore`/`nextPage`, passing `until` as the',
+  '`window.until` of the previous page, so every page comes from the same range.',
 ].join(' ')
 
 export const POSTGRES_INSTRUCTIONS = [

@@ -66,8 +66,8 @@ comes back.
 | `get-connection-status` | WhatsApp | read | Whether the account is paired and connected (`open`) |
 | `list-chats` | WhatsApp | read | Conversations in scope with the `jid` other tools take; filter by name, number or jid with `query`, by `type` (`group` / `direct`) or `unreadOnly`; `sort` by `last` activity (default) or `name`; pages of up to 200 (`page`, `limit`), with `hasMore`/`nextPage` and `truncated` / `incomplete` / `unnamedGroups` flags when the listing is partial |
 | `list-contacts` | WhatsApp | read | Address-book contacts (groups excluded) with their `jid`, number and name; optional `query`, `page`, `limit` (default 100); says `hasMore` when there is another page |
-| `read-messages` | WhatsApp | read | One chat, newest first, 1–200 per page (default 50), optional `since` / `until`; reports `hasMore`, `nextPage`, `covered` and `totalMatching` |
-| `search-messages` | WhatsApp | read | Messages containing every word of `query`, across chats in scope or one `jid`; optional date range and `fromMe`; up to 100 matches (default 20) |
+| `read-messages` | WhatsApp | read | One chat (`jid` or a phone number), newest first, 1–200 per page (default 50), optional `since` / `until`; `author` keeps one group member's messages; `around` + `before` / `after` returns the messages surrounding one message id; reports `hasMore`, `nextPage`, `covered` and `totalMatching` |
+| `search-messages` | WhatsApp | read | Messages containing every word of `query` (or any, with `match: 'any'`), ignoring case and accents, across chats in scope or one `jid` (or phone number); also matches file names and captions; `author` (needs a group `jid`) lists one member's messages; optional date range and `fromMe`; up to 100 matches (default 20) per page, walked with `nextPage` and `window.until` |
 | `send-text-message` | WhatsApp | **write** | Send text to a number in international format |
 | `get-telegram-status` | Telegram | read | Whether the account is linked and online, who it is signed in as, and how far sync has got |
 | `list-telegram-chats` | Telegram | read | Synced chats in scope — private, groups, supergroups, channels — most recently active first, with the `chatId` other tools take |
@@ -101,7 +101,8 @@ the connection's dashboard. Which axes appear depends on the kind:
   ticked, `run-statement` not.
 - **Chats** (WhatsApp and Telegram) — all conversations, or an allowlist. `list-chats` returns
   only allowed conversations; `read-messages` and `send-text-message` refuse
-  anything else, naming the chat so the assistant can explain why.
+  anything else, naming the chat so the assistant can explain why (a phone number
+  outside the token's chats gets one generic "no accessible chat" answer instead).
   `search-messages` does both: asked for a chat outside scope it refuses by name,
   while an unrestricted search is narrowed to the allowed chats — out-of-scope
   messages are excluded by the query itself, not filtered out after being read.

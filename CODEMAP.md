@@ -113,9 +113,12 @@ Líneas aprox. entre paréntesis. Símbolos principales exportados.
 | Archivo | Rol |
 |---|---|
 | `evolution.ts` | cliente HTTP Evolution: `credentialsForInstance` (sin fallback global), `evolutionAdminCredentials`, `evolutionClientForInstance` (UI), `useEvolutionClient` (MCP) |
-| `evolution-db.ts` (675) | **lectura SQL read-only** del Postgres de Evolution: `listMessagesPage`, `searchMessages`, `messageDbUrlFor`, `onDeploymentServer`, `resolveEvolutionInstanceId` |
-| `chats.ts` (1254) | dar forma: `listChats`, `listChatsPage`, `chatListing` (caché 60s), `listMessages` (`MessagePage`), `listAccountMessages`, `contactDirectory`, `listContacts`, `classifyContent`, `previewOf` |
-| `mentions.ts` | resolver @menciones desde `contextInfo`, nombres de autores |
+| `evolution-db.ts` (1020) | **lectura SQL read-only** del Postgres de Evolution: `listMessagesPage`, `searchMessages`, `listMessageRecordsAround`, `relatedChatJids`, `distinctSenders`, `messageDbUrlFor`, `onDeploymentServer`, `resolveEvolutionInstanceId` |
+| `chats.ts` (1365) | dar forma: `listChats`, `listChatsPage`, `chatListing` (caché 60s), `listMessages` (`MessagePage`), `listAccountMessages`, `contactDirectory`, `listContacts`, `classifyContent`, `previewOf` |
+| `mentions.ts` | resolver @menciones desde `contextInfo`, nombres de autores, `groupPeople` (miembros de un grupo con todas sus identidades) |
+| `chat-target.ts` | `resolveChatTarget`: `jid` o número de teléfono → formas del chat (`@s.whatsapp.net` + `@lid`) con scope comprobado forma a forma; lo usan `read-messages` y `search-messages` |
+| `author-filter.ts` | `resolveAuthor`: `author` (nombre/número) dentro de un grupo → filtro SQL, candidatos o nada; participantes primero, `pushName` de respaldo |
+| `search-text.ts` | puro (cargable con `node`): `foldForSearch`, `matchesSearch` y `SQL_FOLD_FROM/TO` (derivados de `foldForSearch`) para el `translate()` del SQL |
 
 ### Postgres (conexión kind `postgres`)
 | Archivo | Rol |
@@ -228,6 +231,7 @@ Secretos en `instances` (`api_key, admin_key, dsn, evolution_db_url, telegram_db
 | **Cambiar el schema de la app** | añadir migración al final de `APP_MIGRATIONS` (`server/db/migrations.ts`) + tipos en `app-db.ts`. |
 | **Nueva ruta API** | `server/api/.../x.<get|post|patch|delete>.ts`; `requireSessionUser` + `requireReadableInstance*`/`requireManagedInstance*`/`requireOrgAdmin` de `org.ts`; body con `parseBody`. |
 | **Cambiar lectura de mensajes WhatsApp** | SQL en `evolution-db.ts`; forma/preview en `chats.ts`; tool en `whatsapp/read-messages.ts` / `search-messages.ts`. Leer CLAUDE.md › "History arrives once" y reglas de dedupe/reacciones. |
+| **Cambiar búsqueda/lectura por texto, número, autor o `around`** | Plegado de acentos: solo `search-text.ts` (el SQL se deriva de `foldForSearch`, no listar a mano). Resolver `jid`/número: `chat-target.ts`; `author`: `author-filter.ts` (+ `groupPeople` en `mentions.ts`); SQL: `searchMessages`, `listMessagesPage`, `listMessageRecordsAround`, `distinctSenders` en `evolution-db.ts`. Los tools usan `strictInput: true`. Leer CLAUDE.md › "search-messages pages like read-messages". |
 | **Cambiar reglas del SQL de Postgres** | `pg-guard.ts` (qué se permite), `pg-run.ts` (ejecución), `pg-catalog.ts` (introspección). Leer CLAUDE.md › "Postgres connections". |
 | **Cambiar scope de tokens** | `mcp-scope.ts` (enforcement), `scope-schema.ts` (input), `tokens.ts` (`scopeFields`), UI `TokenScopeFields.vue` + `useTokenScope`. |
 | **Login / 2FA / signup / verificación** | `api/auth/*`, `session.ts`, `mfa.ts`, `totp.ts`, `webauthn.ts`, `signup-policy.ts`, `email-verification.ts`, `login-throttle.ts`; UI `login.vue`, `signup.vue`, `verify-email.vue`, `TwoFactorSettings.vue`. |
