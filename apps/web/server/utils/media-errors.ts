@@ -63,7 +63,7 @@ export function evolutionErrorText(body: unknown): string {
   }
   const own = firstString(o.message)
   if (own) return own
-  return o.data !== undefined && o.data !== body ? evolutionErrorText(o.data) : ''
+  return evolutionErrorText(o.data)
 }
 
 /**
@@ -79,6 +79,18 @@ export function classifyEvolutionFailure(input: { status?: number, text?: string
   return 'unknown'
 }
 
+const MESSAGES: Record<MediaFailureKind, { status: number, message: string }> = {
+  expired: { status: 404, message: 'WhatsApp no longer has this file. Ask the sender to send it again.' },
+  timeout: { status: 504, message: 'WhatsApp did not answer within 30 seconds, so the file may no longer be available. Try again later.' },
+  cooldown: { status: 429, message: 'This file was requested a moment ago and WhatsApp did not answer. Wait about two minutes before asking for it again.' },
+  busy: { status: 503, message: 'The server is busy with other downloads. Try again in a few seconds.' },
+  'too-large': { status: 413, message: 'The file is larger than this connector will handle.' },
+  'hash-mismatch': { status: 502, message: 'The downloaded file did not match its checksum, so it was discarded. Try again, or ask the sender to send it again.' },
+  empty: { status: 502, message: 'WhatsApp returned no content for this message.' },
+  internal: { status: 500, message: 'The file could not be fetched because of an internal error. It has been logged on the server.' },
+  unknown: { status: 502, message: 'WhatsApp could not deliver this file and gave no recognisable reason. Try again later.' }
+}
+
 const DISCONNECTED_CAUSES: ReadonlySet<MediaFailureKind> = new Set(['expired', 'timeout', 'unknown'])
 
 /**
@@ -87,52 +99,9 @@ const DISCONNECTED_CAUSES: ReadonlySet<MediaFailureKind> = new Set(['expired', '
  * for "busy" or "too large" it would be noise that points the wrong way.
  */
 export function mediaFailureMessage(kind: MediaFailureKind, accountState?: string): { status: number, message: string } {
-  let status: number
-  let message: string
-  switch (kind) {
-    case 'expired':
-      status = 404
-      message = 'WhatsApp no longer has this file. Ask the sender to send it again.'
-      break
-    case 'timeout':
-      status = 504
-      message = 'WhatsApp did not answer within 30 seconds, so the file may no longer be available. Try again later.'
-      break
-    case 'cooldown':
-      status = 429
-      message = 'This file was requested a moment ago and WhatsApp did not answer. Wait about two minutes before asking for it again.'
-      break
-    case 'busy':
-      status = 503
-      message = 'The server is busy with other downloads. Try again in a few seconds.'
-      break
-    case 'too-large':
-      status = 413
-      message = 'The file is larger than this connector will handle.'
-      break
-    case 'hash-mismatch':
-      status = 502
-      message = 'The downloaded file did not match its checksum, so it was discarded. Try again, or ask the sender to send it again.'
-      break
-    case 'empty':
-      status = 502
-      message = 'WhatsApp returned no content for this message.'
-      break
-    case 'internal':
-      status = 500
-      message = 'The file could not be fetched because of an internal error. It has been logged on the server.'
-      break
-    case 'unknown':
-      status = 502
-      message = 'WhatsApp could not deliver this file and gave no recognisable reason. Try again later.'
-      break
-    default: {
-      const never: never = kind
-      throw new Error(`unhandled media failure kind: ${String(never)}`)
-    }
-  }
+  const { status, message } = MESSAGES[kind]
   if (DISCONNECTED_CAUSES.has(kind) && accountState !== undefined && accountState !== 'open') {
-    message += ` The WhatsApp account is currently disconnected (state: ${accountState}), which is the likely cause.`
+    return { status, message: `${message} The WhatsApp account is currently disconnected (state: ${accountState}), which is the likely cause.` }
   }
   return { status, message }
 }

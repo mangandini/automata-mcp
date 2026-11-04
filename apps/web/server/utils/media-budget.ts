@@ -184,20 +184,14 @@ export async function extractPdfPages(args: {
   return stoppedBy ? { text, pagesExtracted, pageCount: args.pageCount, stoppedBy } : { text, pagesExtracted, pageCount: args.pageCount }
 }
 
+const STOP_REASONS: Record<NonNullable<PdfExtraction['stoppedBy']>, string> = {
+  pages: 'page limit',
+  chars: 'response size limit; the last page read may be cut short',
+  time: 'extraction time limit'
+}
+
 /** One sentence for the tool's `note` about how much of the PDF the text covers. */
 export function describePdfCoverage(r: PdfExtraction): string {
   if (!r.stoppedBy) return `Text of all ${r.pageCount} ${r.pageCount === 1 ? 'page' : 'pages'}.`
-  const read = `Text of ${r.pagesExtracted} of ${r.pageCount} pages`
-  switch (r.stoppedBy) {
-    case 'pages':
-      return `${read} (page limit); the rest was not read. The download link has the whole file.`
-    case 'chars':
-      return `${read} (response size limit); the last page read may be cut short and the rest was not read. The download link has the whole file.`
-    case 'time':
-      return `${read} (extraction time limit); the rest was not read. The download link has the whole file.`
-    default: {
-      const never: never = r.stoppedBy
-      throw new Error(`unhandled PDF stop reason: ${String(never)}`)
-    }
-  }
+  return `Text of ${r.pagesExtracted} of ${r.pageCount} pages (${STOP_REASONS[r.stoppedBy]}); the rest was not read. The download link has the whole file.`
 }
