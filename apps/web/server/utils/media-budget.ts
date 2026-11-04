@@ -190,8 +190,16 @@ const STOP_REASONS: Record<NonNullable<PdfExtraction['stoppedBy']>, string> = {
   time: 'extraction time limit'
 }
 
-/** One sentence for the tool's `note` about how much of the PDF the text covers. */
+/**
+ * One sentence for the tool's `note` about how much of the PDF the text covers.
+ * Not for `text === ''` (a scanned PDF): "text of all N pages" would be false,
+ * the caller says there is no text instead.
+ */
 export function describePdfCoverage(r: PdfExtraction): string {
   if (!r.stoppedBy) return `Text of all ${r.pageCount} ${r.pageCount === 1 ? 'page' : 'pages'}.`
+  // The char cap can cut the very last page: nothing is unread, but the page is incomplete.
+  if (r.stoppedBy === 'chars' && r.pagesExtracted === r.pageCount) {
+    return `Text of all ${r.pageCount} pages, but the last one is cut short (${STOP_REASONS.chars.split(';')[0]}). The download link has the whole file.`
+  }
   return `Text of ${r.pagesExtracted} of ${r.pageCount} pages (${STOP_REASONS[r.stoppedBy]}); the rest was not read. The download link has the whole file.`
 }

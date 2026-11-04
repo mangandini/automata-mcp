@@ -47,12 +47,7 @@ function firstString(value: unknown): string {
   return ''
 }
 
-/**
- * The reason text out of whatever an error carries: Evolution's JSON body
- * (`{ response: { message: ['…'] } }`), a plain `{ message }`, a bare string,
- * or an ofetch error that wraps the body in `data`. `''` when there is none.
- */
-export function evolutionErrorText(body: unknown): string {
+function textOfBody(body: unknown): string {
   if (typeof body === 'string') return body
   if (typeof body !== 'object' || body === null) return ''
   const o = body as Record<string, unknown>
@@ -61,9 +56,22 @@ export function evolutionErrorText(body: unknown): string {
     const inner = firstString((response as Record<string, unknown>).message)
     if (inner) return inner
   }
-  const own = firstString(o.message)
-  if (own) return own
-  return evolutionErrorText(o.data)
+  return firstString(o.message)
+}
+
+/**
+ * The reason text out of whatever an error carries: Evolution's JSON body
+ * (`{ response: { message: ['…'] } }`), a plain `{ message }`, a bare string,
+ * or an ofetch error. The last carries the body in `data` and its own
+ * `message` is only `[POST] "url": 400 Bad Request`, so `data` is read first
+ * (one level, no recursion). `''` when there is none.
+ */
+export function evolutionErrorText(body: unknown): string {
+  if (typeof body === 'object' && body !== null) {
+    const fromData = textOfBody((body as Record<string, unknown>).data)
+    if (fromData) return fromData
+  }
+  return textOfBody(body)
 }
 
 /**
@@ -97,6 +105,8 @@ const DISCONNECTED_CAUSES: ReadonlySet<MediaFailureKind> = new Set(['expired', '
  * The answer for the model, with the HTTP status the link route uses. The
  * account state is appended only where a dropped session is a plausible cause;
  * for "busy" or "too large" it would be noise that points the wrong way.
+ * The public link route must NOT pass `accountState`: the public page never
+ * reveals the state of the account, only authenticated callers may.
  */
 export function mediaFailureMessage(kind: MediaFailureKind, accountState?: string): { status: number, message: string } {
   const { status, message } = MESSAGES[kind]
