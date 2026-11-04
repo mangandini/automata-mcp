@@ -20,6 +20,27 @@ export const MEDIA_READ_CAP_BYTES = 10 * 1024 * 1024
 export const MEDIA_LINK_CAP_DEFAULT = 25 * 1024 * 1024
 /** In-memory copy of verified downloads (`NUXT_WHATSAPP_MEDIA_CACHE_BYTES` overrides). */
 export const MEDIA_CACHE_DEFAULT = 50 * 1024 * 1024
+/**
+ * `NUXT_WHATSAPP_MEDIA_MAX_BYTES`: a positive whole number; anything else
+ * (unset, empty, zero, negative, not a number) is the default.
+ */
+export function linkCapFrom(value: unknown): number {
+  const n = Number(value)
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : MEDIA_LINK_CAP_DEFAULT
+}
+
+/**
+ * `NUXT_WHATSAPP_MEDIA_CACHE_BYTES`: `0` turns the cache off (an operator may
+ * not want private content held in memory at all). Unset, empty, negative or
+ * not a number is the default; the empty string is checked on its own because
+ * `Number('')` is `0` and would otherwise switch the cache off by accident.
+ */
+export function cacheBytesFrom(value: unknown): number {
+  const text = typeof value === 'string' ? value.trim() : value
+  const n = text === '' || text === undefined || text === null ? NaN : Number(text)
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : MEDIA_CACHE_DEFAULT
+}
+
 /** Decoding a larger image costs more memory than the process can spare. */
 export const MAX_IMAGE_PIXELS = 40_000_000
 export const PDF_LIMITS = { maxPages: 50, maxMs: 10_000 } as const

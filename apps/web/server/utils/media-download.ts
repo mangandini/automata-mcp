@@ -7,7 +7,7 @@ import type { MessageKey } from './evolution-db'
 import { getInstanceStatus } from './instances'
 import { parseEvolutionMediaBody, readBodyCapped, readBodyPrefix, sha256Matches } from './media-body.ts'
 import type { EvolutionMedia } from './media-body.ts'
-import { MEDIA_CACHE_DEFAULT, MEDIA_LINK_CAP_DEFAULT, MEDIA_READ_CAP_BYTES, maxResponseBodyBytes } from './media-budget.ts'
+import { cacheBytesFrom, linkCapFrom, MEDIA_READ_CAP_BYTES, maxResponseBodyBytes } from './media-budget.ts'
 import { classifyEvolutionFailure, evolutionErrorText, MediaError, mediaFailureMessage } from './media-errors.ts'
 import type { MediaFailureKind } from './media-errors.ts'
 import { createCooldown, createInflight, createMediaCache, createSemaphore, mediaCacheKey } from './media-memory.ts'
@@ -37,16 +37,18 @@ const ERROR_TEXT_BYTES = 64 * 1024
 /** The account-state read after a failure is a courtesy and must not hold the answer. */
 const STATE_READ_MS = 5_000
 
+/**
+ * Read cap fixed; link cap and cache size from runtimeConfig. The link cap falls
+ * back to its default for anything that is not a positive number. The cache
+ * size takes `0` as "off" and falls back only for unset, empty, negative or
+ * non-numeric values (see `cacheBytesFrom`).
+ */
 export function mediaLimits(): { readCap: number, linkCap: number, cacheBytes: number } {
   const config = useRuntimeConfig()
-  const positive = (value: unknown, fallback: number) => {
-    const n = Number(value)
-    return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback
-  }
   return {
     readCap: MEDIA_READ_CAP_BYTES,
-    linkCap: positive(config.whatsappMediaMaxBytes, MEDIA_LINK_CAP_DEFAULT),
-    cacheBytes: positive(config.whatsappMediaCacheBytes, MEDIA_CACHE_DEFAULT),
+    linkCap: linkCapFrom(config.whatsappMediaMaxBytes),
+    cacheBytes: cacheBytesFrom(config.whatsappMediaCacheBytes),
   }
 }
 
@@ -176,8 +178,11 @@ async function lead(
         console.error(`[media] checksum mismatch for message ${source.key.id} of connection ${instance.id}; discarded`)
         throw failure('hash-mismatch')
       }
-      // Verified originals only. A copy of its own: the cache must not pin
-      // whatever the parser's buffer belongs to, nor change if a caller does.
+      // Only what passed the checks above: not larger than the cap, and not
+      // contradicted by `fileSha256`. A message that carries no `fileSha256` is
+      // cached too, since the spec verifies only "when the message has one".
+      // A copy of its own: the cache must not pin whatever the parser's buffer
+      // belongs to, nor change if a caller does.
       mediaCache().set(cacheKey, { bytes: Buffer.from(media.bytes), mimeType: media.mimeType })
       return media
     }

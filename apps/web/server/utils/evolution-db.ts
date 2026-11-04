@@ -793,9 +793,10 @@ export interface MediaMessageRow {
  * The predicate sits inside the CTE, before `DISTINCT ON`, so a copy of the
  * same message id stored under an out-of-scope chat cannot be the survivor.
  *
- * The dedupe and its ordering are `listMessagesPage`'s, so the row returned for
- * a message is the one a read of that chat shows. Parameterised SQL only; the
- * account predicate is always present.
+ * The dedupe and its ordering are `listMessagesPage`'s (so for one chat the row
+ * returned is the one a read of it shows; with `jids` or `anyChat` copies are
+ * collapsed across the chats in scope). Parameterised SQL only; the account
+ * predicate is always present.
  */
 export async function findMediaMessage(
   instance: AppInstance,
@@ -803,12 +804,20 @@ export async function findMediaMessage(
 ): Promise<MediaMessageRow | undefined> {
   if (!query.id) throw new Error('findMediaMessage needs a message id')
 
+  // Exactly one scope, or nothing is read. The union type does not stop a
+  // caller from passing two (`{ remoteJid, jids }` type-checks), and picking one
+  // silently would widen a single-chat lookup to the whole allowlist.
+  const scope: { remoteJid?: string, jids?: string[], anyChat?: boolean } = query
+  const given = [scope.remoteJid, scope.jids, scope.anyChat].filter(value => value !== undefined).length
+  if (given !== 1) throw new Error('findMediaMessage needs exactly one of remoteJid, jids or anyChat')
+  if (scope.anyChat !== undefined && scope.anyChat !== true) throw new Error('findMediaMessage: anyChat can only be true')
+
   const sql = await evolutionDbFor(instance)
-  let chat: ReturnType<Sql>
-  if ('jids' in query) chat = sql`AND m.key->>'remoteJid' = ANY(${query.jids}::text[])`
-  else if ('remoteJid' in query) chat = sql`AND m.key->>'remoteJid' = ${query.remoteJid}`
-  else if (query.anyChat === true) chat = sql``
-  else throw new Error('findMediaMessage needs a chat scope')
+  const chat = scope.remoteJid !== undefined
+    ? sql`AND m.key->>'remoteJid' = ${scope.remoteJid}`
+    : scope.jids !== undefined
+      ? sql`AND m.key->>'remoteJid' = ANY(${scope.jids}::text[])`
+      : sql``
 
   const instanceId = await resolveEvolutionInstanceId(instance)
 
