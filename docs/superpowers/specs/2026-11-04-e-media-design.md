@@ -92,11 +92,12 @@ Casos reales: CL 2026-10-22 (monto en un `.xlsx` adjunto y en capturas `[image]`
 - **Logs fuera del proceso**: el proxy de Coolify (Traefik) o Railway registran el path con el token en sus propios logs de acceso; el criterio "no aparece en logs" cubre solo los de la app. Decirlo en `OPS.md` y en la descripción.
 - Cada llamada al tool crea un enlace nuevo. Filas vencidas se borran (tarea programada o al crear; mi decisión: al crear, `DELETE … WHERE expires_at < now() - 1 day`). Todo el estado en BD: vale con varias réplicas.
 - **Copia temporal en memoria** (permitida por el usuario si mejora la experiencia; parámetros, mi decisión):
-  - Al descargar (en el tool o en un `POST`), los bytes verificados (`fileSha256`) quedan en una caché **solo en memoria del proceso**, clave `instanceId` + `remoteJid` + `key.id`, **10 min** desde la última descarga y nunca más allá del `expires_at` del enlace.
-  - Así, abrir el enlace poco después de que Claude lo leyó no vuelve a pedir el archivo a WhatsApp (más rápido, y sigue funcionando si el teléfono deja de responder o el archivo expira en esos minutos); un doble toque o una segunda descarga tampoco.
-  - **Las comprobaciones del `POST` (paso 2, token vivo, scope, opt-in; paso 3, cupo) corren siempre antes de servir desde la caché**: la caché ahorra la descarga, nunca la autorización.
-  - Tope total (mi decisión: 100 MB, LRU) y ningún archivo por encima del tope de enlace; al vencer o expulsarse, se suelta la referencia. No se escribe a disco ni a BD; con varias réplicas cada una tiene la suya (una réplica sin la copia simplemente descarga).
-  - Se vacía la entrada si la descarga verificada no coincide o si el enlace se revoca en el `POST`.
+  - Qué se guarda: solo los **bytes originales ya verificados** (`fileSha256`), nunca la imagen reducida ni el texto del PDF; un fallo de verificación nunca llena la caché. La llenan el tool (≤ tope de lectura) y el `POST` (≤ tope de enlace).
+  - Caché **solo en memoria del proceso**, clave `instanceId` + `remoteJid` + `key.id`, TTL **absoluto de 10 min** desde que se llenó (no se renueva con cada uso). Sirve a cualquier enlace vivo de ese mensaje; la vida del enlace la controla el `POST`, no la caché.
+  - Un acierto se salta solo el paso 4 (re-lectura, descarga, verificación); **los pasos 2 y 3 (token vivo, scope, opt-in, cupo) corren siempre**: la caché ahorra la descarga, nunca la autorización.
+  - Efecto: abrir el enlace poco después de que Claude lo leyó no vuelve a pedir el archivo a WhatsApp (más rápido, y funciona aunque el teléfono deje de responder o el archivo expire en esos minutos); un doble toque tampoco.
+  - Tope total configurable (`NUXT_WHATSAPP_MEDIA_CACHE_BYTES`, por defecto 50 MB, LRU), porque se suma al pico del procesamiento (2 × JSON + buffer + decodificación de imagen). La medición de RSS del criterio 11 se hace **con la caché llena**.
+  - `deleteInstance()` expulsa las entradas de esa conexión (junto a `closeKeyedPool('evo:…')`). Revocar tokens o cambiar scope no necesita nada: la autorización corre antes de servir. Nada a disco ni BD; cada réplica tiene la suya (una réplica sin copia simplemente descarga).
 
 ### Opt-in
 
