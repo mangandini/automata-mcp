@@ -766,7 +766,9 @@ interface AroundRow extends MessageRecord { side: 'older' | 'anchor' | 'newer', 
  *   `{ anyChat }`     a token with `allChats` and no chat named.
  */
 export type MediaMessageQuery = { id: string } & (
-  { remoteJid: string } | { jids: string[] } | { anyChat: true }
+  | { remoteJid: string, jids?: never, anyChat?: never }
+  | { jids: string[], remoteJid?: never, anyChat?: never }
+  | { anyChat: true, remoteJid?: never, jids?: never }
 )
 
 export interface MediaMessageRow {
@@ -804,10 +806,10 @@ export async function findMediaMessage(
 ): Promise<MediaMessageRow | undefined> {
   if (!query.id) throw new Error('findMediaMessage needs a message id')
 
-  // Exactly one scope, or nothing is read. The union type does not stop a
-  // caller from passing two (`{ remoteJid, jids }` type-checks), and picking one
+  // Exactly one scope, or nothing is read. The type already says so; this is
+  // for a caller the type does not reach (a cast, plain JS), since picking one
   // silently would widen a single-chat lookup to the whole allowlist.
-  const scope: { remoteJid?: string, jids?: string[], anyChat?: boolean } = query
+  const scope = query
   const given = [scope.remoteJid, scope.jids, scope.anyChat].filter(value => value !== undefined).length
   if (given !== 1) throw new Error('findMediaMessage needs exactly one of remoteJid, jids or anyChat')
   if (scope.anyChat !== undefined && scope.anyChat !== true) throw new Error('findMediaMessage: anyChat can only be true')

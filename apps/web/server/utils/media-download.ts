@@ -37,12 +37,7 @@ const ERROR_TEXT_BYTES = 64 * 1024
 /** The account-state read after a failure is a courtesy and must not hold the answer. */
 const STATE_READ_MS = 5_000
 
-/**
- * Read cap fixed; link cap and cache size from runtimeConfig. The link cap falls
- * back to its default for anything that is not a positive number. The cache
- * size takes `0` as "off" and falls back only for unset, empty, negative or
- * non-numeric values (see `cacheBytesFrom`).
- */
+/** Read cap fixed; the other two from runtimeConfig, parsed by `linkCapFrom` and `cacheBytesFrom` (media-budget.ts). */
 export function mediaLimits(): { readCap: number, linkCap: number, cacheBytes: number } {
   const config = useRuntimeConfig()
   return {
@@ -183,7 +178,9 @@ async function lead(
       // cached too, since the spec verifies only "when the message has one".
       // A copy of its own: the cache must not pin whatever the parser's buffer
       // belongs to, nor change if a caller does.
-      mediaCache().set(cacheKey, { bytes: Buffer.from(media.bytes), mimeType: media.mimeType })
+      if (media.bytes.length <= mediaLimits().cacheBytes) {
+        mediaCache().set(cacheKey, { bytes: Buffer.from(media.bytes), mimeType: media.mimeType })
+      }
       return media
     }
     catch (error) {
