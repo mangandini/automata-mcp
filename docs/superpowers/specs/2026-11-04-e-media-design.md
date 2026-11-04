@@ -66,6 +66,7 @@ Casos reales: CL 2026-10-22 (monto en un `.xlsx` adjunto y en capturas `[image]`
   3. Volver a descargar vía Evolution, con el mismo tope; fallo de WhatsApp/Evolution → página/JSON que lo explica (expirado / desconectado), nunca un archivo vacío.
   4. Responder el archivo con `Content-Disposition: attachment; filename*=…` (nombre original, saneado), `Content-Type` del mime, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
 - Reutilizable dentro de la hora. **Mi decisión:** tope de 20 descargas por enlace (contador por escritura condicional), para que un enlace filtrado no sirva de proxy ilimitado.
+- **Mis decisiones:** cada llamada al tool crea un enlace nuevo (no se reutiliza el de una llamada anterior); una descarga fallida (WhatsApp/Evolution) no cuenta para el tope de 20.
 - Throttle en memoria por IP en la ruta (velocidad, no control; igual que `login-throttle.ts`).
 - Filas vencidas se borran (al crear enlaces nuevos o en una tarea programada; a elección del constructor). Funciona con varias réplicas porque todo el estado está en la BD.
 - El token del enlace **no aparece en logs**: extender `redact.ts` / `plugins/redact-mcp.ts` al nuevo prefijo (hoy solo cubren `/mcp`).
