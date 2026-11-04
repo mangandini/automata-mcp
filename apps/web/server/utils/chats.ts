@@ -1136,36 +1136,6 @@ interface GroupInfo {
   pictureUrl?: string
 }
 
-/** `ProtocolMessage.Type.MESSAGE_EDIT` — the only subtype carrying readable content. */
-const PROTOCOL_MESSAGE_EDIT = 14
-
-/**
- * Transparent `FutureProofMessage` wrappers: `{ message: Message }` and nothing
- * else.
- *
- * Baileys' `normalizeMessageContent` unwraps this shape, but the rc.9 Evolution
- * 2.3.7 pins does not know `associatedChildMessage` (added upstream later, PR
- * #1874) — and `prepareMessage` types a row with `getContentType()` on the
- * *raw*, un-normalized payload regardless, so the wrapper name is what reaches
- * us as `messageType`. Official WhatsApp clients produce these for album media
- * and for a caption edit; Baileys' own album sender does not, which is why they
- * went unnoticed until a caller reported empty rows.
- *
- * `ephemeralMessage` and the `viewOnceMessage*` family are deliberately absent.
- * They are transparent wrappers too, but unwrapping a view-once photo to a bare
- * `[image]` presents it as an ordinary photo, which it is not — doing that
- * honestly needs its own marker, and that is a separate decision.
- */
-const WRAPPER_KEYS = ['associatedChildMessage', 'editedMessage', 'documentWithCaptionMessage'] as const
-
-/**
- * Bounded rather than recursive. The payload is always JSON-derived, so a cycle
- * is not reachable and no visited-set is needed; this only caps an absurdly
- * nested one. Falling out of the loop still wrapped leaves the row reading
- * exactly as it did before this existed: wrapper type, no text.
- */
-const MAX_UNWRAP_DEPTH = 4
-
 interface NormalizedMessage {
   /** WhatsApp control plane. Drop the row and count it. */
   noise: boolean
@@ -1188,7 +1158,7 @@ interface NormalizedMessage {
  *   must survive: Evolution's live path skips top-level protocol messages
  *   entirely, so these rows come only from history sync, where nothing patches
  *   the original — the edit row is the *only* copy of the new text.
- * - `associatedChildMessage` wraps a real message (see `WRAPPER_KEYS`). Unwrap
+ * - `associatedChildMessage` wraps a real message (see `WRAPPER_KEYS` in `message-payload.ts`). Unwrap
  *   it; filtering it would delete album media and captioned video outright.
  * - `secretEncryptedMessage` is an encrypted edit and stays, labelled — see
  *   `UnreadableReason`.
@@ -1205,33 +1175,12 @@ interface NormalizedMessage {
  * rather than subtracted — see `MessagePage`.
  */
 function classifyContent(message: unknown, messageType?: string): NormalizedMessage {
-  let payload = asRecord(message)
-
   // Nothing to read: the type hint is all there is, and the only hint meaning
   // "control record" is this one.
-  if (!payload) return { noise: messageType === 'protocolMessage', type: messageType }
+  if (!asRecord(message)) return { noise: messageType === 'protocolMessage', type: messageType }
 
-  let unwrapped = false
-  let editOf: string | undefined
-
-  for (let depth = 0; depth < MAX_UNWRAP_DEPTH; depth++) {
-    const protocol = asRecord(payload.protocolMessage)
-    if (protocol) {
-      const edited = protocolSubtype(protocol) === PROTOCOL_MESSAGE_EDIT
-        ? asRecord(protocol.editedMessage)
-        : undefined
-      if (!edited) return { noise: true }
-      editOf = idOf(protocol.key) ?? editOf
-      payload = edited
-      unwrapped = true
-      continue
-    }
-
-    const wrapped = firstWrapped(payload)
-    if (!wrapped) break
-    payload = wrapped
-    unwrapped = true
-  }
+  const { noise, payload, unwrapped, editOf } = unwrapPayload(message)
+  if (noise || !payload) return { noise: true }
 
   const secret = asRecord(payload.secretEncryptedMessage)
 
@@ -1246,60 +1195,6 @@ function classifyContent(message: unknown, messageType?: string): NormalizedMess
       ? { editOf: idOf(secret.targetMessageKey) ?? editOf, unreadable: secretEncReason(secret.secretEncType) }
       : { editOf }),
   }
-}
-
-function asRecord(value: unknown): Record<string, any> | undefined {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, any>
-    : undefined
-}
-
-function idOf(key: unknown): string | undefined {
-  const id = asRecord(key)?.id
-  return typeof id === 'string' && id ? id : undefined
-}
-
-function firstWrapped(payload: Record<string, any>): Record<string, any> | undefined {
-  for (const key of WRAPPER_KEYS) {
-    const inner = asRecord(asRecord(payload[key])?.message)
-    if (inner) return inner
-  }
-  return undefined
-}
-
-/**
- * Baileys' `getContentType`, for an already-decoded payload: the first own key
- * that is `conversation` or *contains* `Message`, minus the one it excludes.
- * `messageContextInfo` deliberately does not match — no capital `M` — which is
- * why a sibling context never shadows real content.
- */
-function contentTypeOf(payload: Record<string, any>): string | undefined {
-  return Object.keys(payload).find(key =>
-    (key === 'conversation' || key.includes('Message')) && key !== 'senderKeyDistributionMessage')
-}
-
-/**
- * `protocolMessage.type`, as a number.
- *
- * An absent value means **REVOKE**, not "keep": proto3 omits a zero on the wire,
- * so a deletion arrives carrying no `type` at all. Reading that as "unknown, so
- * keep it" would surface every deletion as an empty message — the bug this
- * exists to fix, restored.
- *
- * It is an integer because Evolution's `deserializeMessageBuffers` rebuilds
- * every nested object as a plain object and so discards protobufjs' name-
- * emitting `toJSON`. The string branch is defensive: a tag bump that restored it
- * would otherwise silently reclassify every edit as noise.
- */
-function protocolSubtype(protocol: Record<string, any>): number {
-  const raw = protocol.type
-  if (raw === undefined || raw === null) return 0
-  if (typeof raw === 'number') return raw
-  if (typeof raw === 'string') {
-    if (/^\d+$/.test(raw)) return Number(raw)
-    return raw === 'MESSAGE_EDIT' ? PROTOCOL_MESSAGE_EDIT : -1
-  }
-  return -1
 }
 
 /**
