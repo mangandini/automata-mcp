@@ -186,8 +186,11 @@ export async function authorizeMediaLink(link: AppMediaLink): Promise<{ instance
   let instance: AppInstance | undefined
   try {
     const sql = await appDb()
-    facts = await selectTokenFacts(sql, { id: link.token_id })
-    instance = await getRow<AppInstance>('instances', link.instance)
+    // Independent reads (the instance is the link's, not the token's), so one round trip's wait.
+    ;[facts, instance] = await Promise.all([
+      selectTokenFacts(sql, { id: link.token_id }),
+      getRow<AppInstance>('instances', link.instance),
+    ])
   } catch (error) {
     console.error(`[media-link] could not authorize link ${link.id} against the app database:`, error)
     throw appDbUnavailable(error)
