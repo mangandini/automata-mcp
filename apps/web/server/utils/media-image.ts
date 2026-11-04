@@ -110,22 +110,21 @@ export async function prepareImageForModel(bytes: Buffer): Promise<PreparedImage
   // kind of data in other containers.
   const carriesMetadata = Boolean(metadata.exif || metadata.xmp || metadata.iptc || metadata.tifftagPhotoshop)
 
+  const originalMime = detectImageMime(bytes)
   let result
   let output: Metadata | undefined
   try {
     result = await runImageLadder({
       width: originalWidth,
       height: originalHeight,
-      original: { bytes: bytes.length, usable: !carriesMetadata && detectImageMime(bytes) !== undefined },
+      original: { bytes: bytes.length, usable: !carriesMetadata && originalMime !== undefined },
       budgetBytes: imageByteBudget(),
-      encode: async (attempt: ImageAttempt) => {
-        return open()
-          .rotate()
-          .resize({ width: attempt.maxSide, height: attempt.maxSide, fit: 'inside', withoutEnlargement: true })
-          .flatten({ background: '#ffffff' })
-          .jpeg({ quality: attempt.quality, mozjpeg: true })
-          .toBuffer()
-      }
+      encode: (attempt: ImageAttempt) => open()
+        .rotate()
+        .resize({ width: attempt.maxSide, height: attempt.maxSide, fit: 'inside', withoutEnlargement: true })
+        .flatten({ background: '#ffffff' })
+        .jpeg({ quality: attempt.quality, mozjpeg: true })
+        .toBuffer()
     })
     // The header alone does not prove the body decodes, and step 0 never
     // decodes: a cut-off file would otherwise reach the model as "the image".
@@ -138,8 +137,7 @@ export async function prepareImageForModel(bytes: Buffer): Promise<PreparedImage
 
   if (result.attempt.step === 0) {
     // Step 0 is only offered for a file whose magic bytes name one of the four types.
-    const mimeType = detectImageMime(bytes)!
-    return { ok: true, mimeType, bytes, step: 0, width: originalWidth, height: originalHeight, originalWidth, originalHeight }
+    return { ok: true, mimeType: originalMime!, bytes, step: 0, width: originalWidth, height: originalHeight, originalWidth, originalHeight }
   }
   return {
     ok: true,
