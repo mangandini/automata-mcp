@@ -47,11 +47,11 @@ Casos reales: CL 2026-10-22 (monto en un `.xlsx` adjunto y en capturas `[image]`
 
 - Entrada estricta (`strictInput`): `messageId` (el `id` que devuelven `search-messages` / `read-messages`). Sin `jid`: el chat sale de la fila.
 - Pasos, en este orden:
-  1. Buscar la fila por `instanceId` + `key->>'id'`, deduplicada como el resto de lecturas (`DISTINCT ON`), con el **predicado de scope en SQL** cuando el token no tiene `allChats`, contra `remoteJid` **y** `remoteJidAlt` (una forma permitida basta, coherente con `resolveChatTarget`). Ninguna fila → 404 con **un solo mensaje** para "no existe" y "no está en tu scope" (no se pueden sondear ids).
+  1. Buscar la fila por `instanceId` + `key->>'id'`, deduplicada como el resto de lecturas (`DISTINCT ON`), con el **predicado de scope en SQL** cuando el token no tiene `allChats`: `remoteJid = ANY(chats permitidos)`, **solo `remoteJid`**, el mismo predicado que `search-messages`. Así es descargable exactamente lo que el token puede leer o buscar; nunca vía `remoteJidAlt` (eso abriría el chat `@lid` de un token con scope en la forma teléfono, que no puede leerlo). Ninguna fila → 404 con **un solo mensaje** para "no existe" y "no está en tu scope" (no se pueden sondear ids).
   2. Desenvolver el contenido como `classifyContent` (`associatedChildMessage`, `editedMessage`, `documentWithCaptionMessage`) y decidir el tipo por **payload**, no por `messageType`. `imageMessage` o `documentMessage` → continúa; cualquier otro (audio, video, sticker, view-once, ephemeral sin desenvolver, texto) → error "tipo no soportado" que nombra el tipo.
-  3. Rechazar por tamaño declarado (`fileLength`) antes de descargar si supera el tope.
-  4. Descargar vía Evolution (`POST /chat/getBase64FromMediaMessage/{instance}`, cliente por instancia de `useEvolutionClient()`, sin clave global). Re-verificar el tope sobre los bytes reales.
-  5. Crear el enlace (ver abajo) y devolver `content: [...]`: primero un bloque de texto JSON con metadatos (`messageId`, `jid`, `type`, `fileName`, `mimeType`, `size`, `download: { url, expiresAt }`, `note`), luego el bloque `image` o `resource` según el tipo.
+  3. Rechazar por tamaño declarado (`fileLength`) antes de descargar si supera el **tope de enlace**.
+  4. Descargar vía Evolution (`POST /chat/getBase64FromMediaMessage/{instance}`, cliente por instancia de `useEvolutionClient()`, sin clave global). Si el DTO acepta el mensaje completo, enviar **la fila ya comprobada** (lo descargado = lo comprobado). Re-verificar el tope sobre los bytes reales.
+  5. Crear el enlace (ver abajo) y devolver `content: [...]`: primero un bloque de texto JSON con metadatos (`messageId`, `jid`, `type`, `fileName`, `mimeType`, `size`, `download: { url, expiresAt }`, `note`), luego el bloque `image` o `resource` según el tipo, **solo si cabe en el tope de lectura**; si no cabe, solo metadatos + enlace y `note` lo dice (el usuario igual recibe el archivo).
 - Errores de Evolution: medio expirado / no recuperable → error explícito que lo dice ("WhatsApp ya no tiene este archivo; pide que lo reenvíen"); cuenta no conectada → 503 que lo dice. Nunca un resultado vacío. (Los códigos exactos de Evolution 2.3.7 para "expirado" **están por verificar**; ver "Lo que queda al constructor".)
 - `readOnlyHint: true`, `openWorldHint: true` (habla con WhatsApp).
 - Sin `NUXT_PUBLIC_APP_URL` → el tool devuelve el contenido sin enlace y lo dice en `note`. Nunca se construye el enlace con el `Host` de la petición.
@@ -59,10 +59,10 @@ Casos reales: CL 2026-10-22 (monto en un `.xlsx` adjunto y en capturas `[image]`
 ### Enlace de descarga
 
 - Forma: `{NUXT_PUBLIC_APP_URL}/api/media/<token>` (o prefijo equivalente fuera de `/mcp`). El token va en el **path**, nunca en query string. Mismo patrón que invitaciones y verificación: prefijo + 32 bytes aleatorios, se guarda **solo el SHA-256**, comparación por hash.
-- Tabla nueva en el esquema `app` (migración nueva, append-only): hash, conexión, token MCP que lo creó, `messageId`, chat, nombre de archivo, mime, `expires_at` (creación + 1 h), creado, contador de descargas. **Sin bytes.**
+- Tabla nueva en el esquema `app` (migración nueva, append-only): hash, conexión, token MCP que lo creó, `messageId`, chat, nombre de archivo, mime, `expires_at` (creación + 1 h), creado, contador de descargas. **Sin bytes.** Claves foráneas a `instances` y `mcp_tokens` con `ON DELETE CASCADE`: con `RESTRICT` o por defecto, `deleteInstance()` y el borrado de tokens fallarían en cuanto exista un enlace.
 - `GET` del enlace:
   1. Hash → fila; inexistente o vencida → 404 (página/JSON simple que dice "enlace vencido o inválido", sin distinguir).
-  2. Re-comprobar que el **token MCP que lo creó** sigue activo, sigue alcanzando la conexión, sigue teniendo el tool habilitado y el chat sigue en su scope (misma lógica que `resolveMcpAuth` / `isToolAllowed` / scope; no una copia distinta). Si no → 404 igual. Revocar el token mata sus enlaces.
+  2. Re-comprobar que el **token MCP que lo creó** sigue activo, sigue alcanzando la conexión, sigue teniendo el tool habilitado y el chat sigue en su scope. **Esta ruta es un tercer camino de credenciales** y debe respetar la separación de `CLAUDE.md` › "The auth split": carga el token por id desde la fila del enlace y aplica `authorizesInstance()`, el gate de tool y el chequeo de scope como **predicados puros** sobre hechos cargados; las credenciales de Evolution salen de la fila de la conexión por el camino por instancia (`credentialsForInstance`), no de la petición. **Nunca** se pone ni se simula `event.context.mcpAuth` (para reutilizar `useEvolutionClient()`), y nunca se usa la sesión del navegador. Si algo falla → 404 igual. Revocar el token mata sus enlaces; **rotar su secreto no** (la rotación cambia el secreto, no lo que alcanza: un enlace filtrado sigue valiendo hasta vencer, máximo 1 h).
   3. Volver a descargar vía Evolution, con el mismo tope; fallo de WhatsApp/Evolution → página/JSON que lo explica (expirado / desconectado), nunca un archivo vacío.
   4. Responder el archivo con `Content-Disposition: attachment; filename*=…` (nombre original, saneado), `Content-Type` del mime, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
 - Reutilizable dentro de la hora. **Mi decisión:** tope de 20 descargas por enlace (contador por escritura condicional), para que un enlace filtrado no sirva de proxy ilimitado.
@@ -82,7 +82,7 @@ Casos reales: CL 2026-10-22 (monto en un `.xlsx` adjunto y en capturas `[image]`
 - Credenciales por instancia; nunca clave global ni descarga fuera del MCP con la API key de la instancia.
 - `defineKindTool`, nombre de archivo único entre grupos, `title`, descripción escrita para el modelo.
 - Resultado con `content: [...]` pasa intacto por `normalizeToolResult` (patrón de `get-email-attachment`).
-- Tope configurable, mi decisión: `NUXT_WHATSAPP_MEDIA_MAX_BYTES`, por defecto 10 MB (igual que IMAP), documentado en `.env.example`.
+- **Dos topes, mi decisión** (leer y recibir son cosas distintas): tope de **lectura** (lo que se manda a Claude como bloque; valor según los límites reales del cliente, a verificar — no asumir que los 10 MB de IMAP se probaron) y tope de **enlace** `NUXT_WHATSAPP_MEDIA_MAX_BYTES`, por defecto 25 MB, que también aplica la ruta. Ambos en `.env.example`.
 - Sin framework de tests: `pnpm typecheck` + llamadas JSON-RPC reales (local y producción).
 
 ## Criterios de aceptación (producción, GT/CL)
@@ -94,7 +94,7 @@ Casos reales: CL 2026-10-22 (monto en un `.xlsx` adjunto y en capturas `[image]`
 5. Revocar el token → sus enlaces dejan de funcionar.
 6. Mensaje de un chat fuera del scope → mismo error que un id inexistente.
 7. Token con "todas las herramientas" sin la casilla → el tool no aparece en `tools/list`.
-8. Audio/video → "tipo no soportado"; sobre el tope → rechazado antes de descargar.
+8. Audio/video → "tipo no soportado"; sobre el tope de enlace → rechazado antes de descargar; entre tope de lectura y tope de enlace → sin bloque, con enlace que funciona.
 9. Medio antiguo que WhatsApp ya no tiene → error explícito (registrar la antigüedad observada).
 10. El token del enlace no aparece en los logs del servidor.
 
