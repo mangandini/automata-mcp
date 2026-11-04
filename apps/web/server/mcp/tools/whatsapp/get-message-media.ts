@@ -27,8 +27,8 @@ export default defineKindTool({
     + 'paste it anywhere else. Every call downloads the file from WhatsApp again unless it was '
     + 'fetched in the last few minutes, so ask for an attachment once and keep what you read. Not '
     + 'supported: audio, voice notes, video, stickers and view-once media (refused, naming the '
-    + 'type). Files declared over 25 MB are refused; over 10 MB they are not read and only the '
-    + 'link is given. A file WhatsApp no longer serves (old or expired media) is reported as such: '
+    + 'type). Files declared over the link limit (25 MB by default) are refused; over 10 MB they are not read '
+    + 'and only the link is given. A file WhatsApp no longer serves (old or expired media) is reported as such: '
     + 'ask the sender to send it again.',
   annotations: {
     readOnlyHint: true,

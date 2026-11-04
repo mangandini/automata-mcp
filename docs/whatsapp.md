@@ -187,7 +187,9 @@ Things to know:
 - Your reverse proxy (Traefik on Coolify, Railway) logs the request path, and the
   link's secret is in the path. The app redacts it from its own logs, not from the
   proxy's.
-- It needs `sharp` and `unpdf`, which ship in the published images.
+- It needs `sharp` (a native binary, one per platform and libc) and `unpdf`; they are
+  ordinary dependencies of the web app, so a build made on the platform it runs on
+  (the published images build and run on Alpine) has them.
 
 ## Importing existing history
 
