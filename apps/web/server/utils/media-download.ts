@@ -54,6 +54,9 @@ function mediaCache() {
   return cache ??= createMediaCache({ maxBytes: mediaLimits().cacheBytes, ttlMs: CACHE_TTL_MS })
 }
 const semaphore = createSemaphore(MAX_CONCURRENT, SLOT_WAIT_MS)
+// One PDF worker at a time: a hostile file can take a worker to ~450 MB, and two
+// of them were measured at 860-940 MiB together, which leaves nothing at 1 GiB.
+const pdfSemaphore = createSemaphore(1, SLOT_WAIT_MS)
 const cooldown = createCooldown(COOLDOWN_MS)
 const inflight = createInflight<EvolutionMedia>()
 
@@ -112,6 +115,23 @@ export function cachedMedia(instanceId: string, remoteJid: string, messageId: st
  */
 export function withMediaSlot<T>(fn: () => Promise<T>): Promise<T> {
   return semaphore.run(fn)
+}
+
+/**
+ * `withMediaSlot` for reading a PDF: at most one PDF worker per process, and it
+ * still counts against the shared two slots, so the process's peak stays the
+ * sum of one budget.
+ *
+ * **Lock order is fixed: the PDF permit first, then the shared slot, here and
+ * nowhere else.** So the shared slot is never held while waiting for the PDF
+ * permit (a queued PDF cannot stall image processing or downloads behind it),
+ * and nothing that holds a shared slot ever waits for the PDF permit, so the
+ * two cannot deadlock. Each wait has its own 20 s limit and answers `busy`
+ * (with `retryAfterSec`) when it runs out. Like `withMediaSlot`, never call it
+ * from inside a slot.
+ */
+export function withPdfSlot<T>(fn: () => Promise<T>): Promise<T> {
+  return pdfSemaphore.run(() => semaphore.run(fn))
 }
 
 /** A deleted connection takes its cached files with it. */

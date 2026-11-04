@@ -151,7 +151,7 @@ What a call does, in order:
    (`NUXT_WHATSAPP_MEDIA_MAX_BYTES`) are refused before anything is downloaded.
 3. Downloads the file from WhatsApp, once, through Evolution
    (`getBase64FromMediaMessage`, sent the whole stored message, not just its id),
-   with a 30 s timeout, a two-at-a-time limit per process, a two-minute pause on a
+   with a 30 s timeout, a two-at-a-time limit per process (and only one PDF read at a time), a two-minute pause on a
    message after a timeout, and a check of the bytes against the message's own
    `fileSha256`. Only images and PDFs of up to 10 MB are read for the model;
    other documents (Word, Excel, text) and anything over 10 MB are never

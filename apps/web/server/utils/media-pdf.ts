@@ -43,6 +43,8 @@ const MIN_TEXT_CHARS = 20
 const WORKER_LIMITS = { maxOldGenerationSizeMb: 256, maxYoungGenerationSizeMb: 32 }
 
 const MEMORY_POLL_MS = 50
+/** How long `finish` waits for a terminated worker to exit before giving the slot back anyway. */
+const TERMINATE_WAIT_MS = 2000
 
 export interface PdfWorkerLimits {
   /** Wall-clock cap for opening and reading together. */
@@ -169,8 +171,17 @@ function runInWorker(bytes: Buffer, maxChars: number, limits: PdfWorkerLimits): 
       run.outcome = outcome
       if (cause) logFailure(cause)
       // `terminate()` still lets queued messages through; the handlers below ignore them once settled.
-      void worker?.terminate().catch(() => {})
-      resolve(run)
+      // The caller is told only once the worker has actually gone (bounded, in case it
+      // will not stop): the PDF permit is released on resolve, and the next worker must
+      // not start while this one still holds its memory.
+      let giveUp: ReturnType<typeof setTimeout> | undefined
+      const gone = worker
+        ? Promise.race([worker.terminate().catch(() => {}), new Promise(done => { giveUp = setTimeout(done, TERMINATE_WAIT_MS) })])
+        : Promise.resolve()
+      void gone.then(() => {
+        clearTimeout(giveUp)
+        resolve(run)
+      })
     }
     const deadline = setTimeout(() => finish('deadline', `time cap of ${limits.maxMs} ms reached`), limits.maxMs)
     const memoryPoll = setInterval(() => {

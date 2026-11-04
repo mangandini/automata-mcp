@@ -2,7 +2,7 @@ import type { AppInstance } from './app-db'
 import { findMediaMessage } from './evolution-db'
 import { isChatAllowed } from './mcp-scope'
 import type { McpScope } from './mcp-scope'
-import { describeMediaFailure, downloadVerifiedMedia, mediaLimits, withMediaSlot } from './media-download'
+import { describeMediaFailure, downloadVerifiedMedia, mediaLimits, withMediaSlot, withPdfSlot } from './media-download'
 import { MediaError } from './media-errors.ts'
 import { RESPONSE_BUDGET_CHARS, contentChars, describePdfCoverage, textCharBudget } from './media-budget.ts'
 import { prepareImageForModel } from './media-image.ts'
@@ -24,8 +24,9 @@ import { classifyMedia, detectImageMime, looksLikePdf } from './message-payload.
  * talks to Evolution (a cache hit or a follower of an in-flight download holds
  * none) and has released it when it returns, and only then does
  * `withMediaSlot` wrap the PDF worker / image encoder. That slot is the only
- * thing bounding how many PDF workers (each up to ~450 MB) run at once, so the
- * two processors are never called outside it; and nesting a download inside a
+ * thing bounding how many processors run at once, and PDFs go through
+ * `withPdfSlot`, which also allows only one PDF worker (each up to ~450 MB) at a
+ * time, so the two processors are never called outside a slot; and nesting a download inside a
  * processing slot would let two such callers each hold a slot while waiting for
  * a second one.
  *
@@ -227,7 +228,7 @@ export async function getMessageMedia(args: {
       }
       else {
         linkMime = 'application/pdf'
-        const extracted = await inSlot(instance, () => extractPdfForModel(file, { maxChars: textCharBudget() }))
+        const extracted = await inSlot(instance, () => extractPdfForModel(file, { maxChars: textCharBudget() }), withPdfSlot)
         if (extracted?.ok) {
           block = { type: 'text', text: extracted.text }
           processing = { pagesExtracted: extracted.pagesExtracted, pageCount: extracted.pageCount, ...(extracted.stoppedBy && { stoppedBy: extracted.stoppedBy }) }
@@ -306,9 +307,9 @@ async function mediaFailureError(instance: AppInstance, error: unknown) {
  * processor is a bug in it and is logged, and the file is still handed over as
  * a link: `undefined` means "could not be processed".
  */
-async function inSlot<T>(instance: AppInstance, fn: () => Promise<T>): Promise<T | undefined> {
+async function inSlot<T>(instance: AppInstance, fn: () => Promise<T>, slot: typeof withMediaSlot = withMediaSlot): Promise<T | undefined> {
   try {
-    return await withMediaSlot(fn)
+    return await slot(fn)
   }
   catch (error) {
     if (error instanceof MediaError) throw await mediaFailureError(instance, error)
