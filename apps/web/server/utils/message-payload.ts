@@ -43,6 +43,8 @@ const WRAPPER_KEYS = ['associatedChildMessage', 'editedMessage', 'documentWithCa
  */
 export const MAX_UNWRAP_DEPTH = 4
 
+const WRAPPER_KEYS_EPHEMERAL = [...WRAPPER_KEYS, 'ephemeralMessage'] as const
+
 export function asRecord(value: unknown): JsonRecord | undefined {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as JsonRecord
@@ -116,7 +118,7 @@ export function unwrapPayload(message: unknown, options: { ephemeral?: boolean }
   let payload = asRecord(message)
   if (!payload) return { noise: false, unwrapped: false }
 
-  const wrappers: readonly string[] = options.ephemeral ? [...WRAPPER_KEYS, 'ephemeralMessage'] : WRAPPER_KEYS
+  const wrappers: readonly string[] = options.ephemeral ? WRAPPER_KEYS_EPHEMERAL : WRAPPER_KEYS
   let unwrapped = false
   let editOf: string | undefined
 
@@ -187,36 +189,30 @@ export interface MediaClass {
  * tool that hands it to a model on request is not honouring that.
  */
 export function classifyMedia(message: unknown): MediaClass {
+  const unsupported = (unsupportedType: string, inner: JsonRecord): MediaClass =>
+    ({ route: 'unsupported', unsupportedType, inner })
+
   const unwrapped = unwrapPayload(message, { ephemeral: true })
-  if (unwrapped.noise) return { route: 'unsupported', unsupportedType: 'protocolMessage', inner: {} }
+  if (unwrapped.noise) return unsupported('protocolMessage', {})
   const payload = unwrapped.payload
-  if (!payload) return { route: 'unsupported', unsupportedType: 'unknown', inner: {} }
+  if (!payload) return unsupported('unknown', {})
 
   const type = contentTypeOf(payload)
-  if (!type) return { route: 'unsupported', unsupportedType: 'unknown', inner: payload }
-  if (type.startsWith('viewOnceMessage')) {
-    return { route: 'unsupported', unsupportedType: 'view-once', inner: payload }
-  }
+  if (!type) return unsupported('unknown', payload)
 
   const content = asRecord(payload[type])
-  if (content?.viewOnce === true) {
-    return { route: 'unsupported', unsupportedType: 'view-once', inner: payload }
-  }
-  if (!content || (type !== 'imageMessage' && type !== 'documentMessage')) {
-    return { route: 'unsupported', unsupportedType: type, inner: payload }
-  }
+  if (type.startsWith('viewOnceMessage') || content?.viewOnce === true) return unsupported('view-once', payload)
+  if (!content || (type !== 'imageMessage' && type !== 'documentMessage')) return unsupported(type, payload)
 
   const mimeType = mimeOf(content.mimetype)
   const fileName = nonEmptyString(content.fileName)
   const sha256 = storedBytes(content.fileSha256)
 
-  let route: MediaRoute
-  if (type === 'imageMessage') route = 'image'
   // A document whose bytes are a picture is routed as one; the download step
   // re-checks the magic bytes before trusting that (hence "provisional").
-  else if (mimeType?.startsWith('image/')) route = 'image'
-  else if (mimeType === 'application/pdf' || /\.pdf$/i.test(fileName ?? '')) route = 'pdf'
-  else route = 'document'
+  const route: MediaRoute = type === 'imageMessage' || mimeType?.startsWith('image/')
+    ? 'image'
+    : mimeType === 'application/pdf' || /\.pdf$/i.test(fileName ?? '') ? 'pdf' : 'document'
 
   return {
     route,
@@ -264,17 +260,10 @@ export function storedBytes(value: unknown): Uint8Array | undefined {
   if (!record) return undefined
   if (record.type === 'Buffer' && Array.isArray(record.data)) return fromNumbers(record.data)
 
-  const keys = Object.keys(record)
-  if (!keys.length) return undefined
-  // Integer-keyed objects enumerate in ascending order, but make it explicit:
-  // the keys must be exactly 0..n-1, or this is not a byte array.
-  const bytes: unknown[] = new Array(keys.length)
-  for (const key of keys) {
-    const at = Number(key)
-    if (!/^(0|[1-9]\d*)$/.test(key) || at >= keys.length) return undefined
-    bytes[at] = record[key]
-  }
-  return fromNumbers(bytes)
+  // Integer-keyed objects enumerate in ascending order, but index them
+  // explicitly: unless the keys are exactly 0..n-1 some lookup is `undefined`,
+  // and `fromNumbers` refuses that.
+  return fromNumbers(Object.keys(record).map((_, i) => record[i]))
 }
 
 function fromNumbers(values: unknown[]): Uint8Array | undefined {
@@ -296,7 +285,7 @@ function fromBase64(text: string): Uint8Array | undefined {
   const binary = atob(body.replace(/-/g, '+').replace(/_/g, '/'))
   const out = new Uint8Array(binary.length)
   for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i)
-  return out.length ? out : undefined
+  return out
 }
 
 // ---------------------------------------------------------------- magic bytes
@@ -317,15 +306,16 @@ export function detectImageMime(bytes: Uint8Array): 'image/jpeg' | 'image/png' |
   return undefined
 }
 
+const PDF_MARKER = [0x25, 0x50, 0x44, 0x46, 0x2D]
+
 /**
  * `%PDF-` inside the first 1024 bytes, which is where readers (and the PDF
  * spec's own tolerance) look: a few producers prefix the header with junk.
  */
 export function looksLikePdf(bytes: Uint8Array): boolean {
-  const marker = [0x25, 0x50, 0x44, 0x46, 0x2D]
-  const last = Math.min(bytes.length, 1024) - marker.length
+  const last = Math.min(bytes.length, 1024) - PDF_MARKER.length
   for (let i = 0; i <= last; i++) {
-    if (marker.every((byte, j) => bytes[i + j] === byte)) return true
+    if (PDF_MARKER.every((byte, j) => bytes[i + j] === byte)) return true
   }
   return false
 }
