@@ -107,14 +107,16 @@ export function safeDownloadName(input: { fileName?: string, mimeType?: string }
   if (cleaned.length <= MAX_NAME_LENGTH) return cleaned
 
   // Too long: shorten the stem, keep a plausible extension so the file still
-  // opens with the right program. Counted in code points so a pair of UTF-16
+  // opens with the right program. Whole code points only, so a pair of UTF-16
   // surrogates is never cut in half.
   const ext = /\.[A-Za-z0-9]{1,16}$/.exec(cleaned)?.[0] ?? ''
-  const stem = Array.from(cleaned.slice(0, cleaned.length - ext.length))
-  let keep = MAX_NAME_LENGTH - ext.length
-  let head = stem.slice(0, keep).join('')
-  while (head.length > keep) head = stem.slice(0, --keep).join('')
-  return head.replace(/[. ]+$/g, '') + ext
+  const budget = MAX_NAME_LENGTH - ext.length
+  let head = ''
+  for (const ch of cleaned.slice(0, cleaned.length - ext.length)) {
+    if (head.length + ch.length > budget) break
+    head += ch
+  }
+  return head.replace(TRIM_EDGES, '') + ext
 }
 
 /**
@@ -205,7 +207,9 @@ export function renderDownloadPage(args: { fileName: string, expiresAt: Date }):
 
 export type NoticeKind = 'invalid' | 'limit' | 'busy' | 'unavailable' | 'rate' | 'too-large' | 'error'
 
-type Notice = { status: 404 | 410 | 503 | 502 | 429 | 413, title: string, text: string, retryAfterSec?: number }
+type NoticeStatus = 404 | 410 | 503 | 502 | 429 | 413
+
+type Notice = { status: NoticeStatus, title: string, text: string, retryAfterSec?: number }
 
 // `invalid` covers unknown, expired and revoked links alike: telling them apart
 // would let anyone holding a guess learn which tokens exist. `unavailable`
@@ -220,7 +224,7 @@ const NOTICES: Record<NoticeKind, Notice> = {
   'error': { status: 503, title: 'Temporarily unavailable', text: 'The download is temporarily unavailable, try again shortly.', retryAfterSec: 30 }
 }
 
-export function renderNoticePage(kind: NoticeKind): { status: 404 | 410 | 503 | 502 | 429 | 413, html: string, retryAfterSec?: number } {
+export function renderNoticePage(kind: NoticeKind): { status: NoticeStatus, html: string, retryAfterSec?: number } {
   const notice = NOTICES[kind]
   const html = layout(notice.title, `<h1>${escapeHtml(notice.title)}</h1><p>${escapeHtml(notice.text)}</p>`)
   return notice.retryAfterSec === undefined
