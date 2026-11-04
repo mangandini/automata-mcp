@@ -106,6 +106,13 @@ export default defineNuxtConfig({
     // docs/whatsapp.md "Reading and searching messages".
     evolutionDatabaseUrl: '',
 
+    // WhatsApp attachment downloads (server/utils/media-download.ts), as strings
+    // like every numeric setting here. The largest file the public download
+    // link serves, and the in-memory copy of recently fetched files; a value
+    // that is not a positive number falls back to the default.
+    whatsappMediaMaxBytes: String(25 * 1024 * 1024),
+    whatsappMediaCacheBytes: String(50 * 1024 * 1024),
+
     // The *default* Telegram bridge (apps/telegram-bridge), for Telegram
     // connections that did not bring their own. Optional, like Evolution's.
     telegramUrl: '',

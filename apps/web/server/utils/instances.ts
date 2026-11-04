@@ -799,6 +799,9 @@ export async function deleteInstance(instance: AppInstance): Promise<void> {
     // A connection on its own server may hold a pool onto that server's message
     // database. Keyed on the row, so it outlives the row unless dropped here.
     await closeKeyedPool(`evo:${instance.id}`)
+    // Attachments already downloaded for it are private content of an account
+    // that is going away; they are not kept for the rest of their 10 minutes.
+    evictMediaForInstance(instance.id)
 
     // Uses the same server the instance was created on, with that server's own
     // global key when it brought one.

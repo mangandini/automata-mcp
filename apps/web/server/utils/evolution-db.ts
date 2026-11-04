@@ -754,6 +754,92 @@ export async function listMessageRecordsAround(
 interface AroundRow extends MessageRecord { side: 'older' | 'anchor' | 'newer', rank: number | string }
 
 /**
+ * Which chats `findMediaMessage` may look in. Three shapes and no default, so
+ * that "any chat" is something a caller writes out and cannot arrive by leaving
+ * a field off:
+ *
+ *   `{ remoteJid }`   one chat the caller already scope-checked (the tool's
+ *                     `jid`, or a download link's stored chat).
+ *   `{ jids }`        the token's allowlist. An empty list matches nothing, the
+ *                     same as everywhere else: a scope that resolved to no chat
+ *                     must not read as no scope.
+ *   `{ anyChat }`     a token with `allChats` and no chat named.
+ */
+export type MediaMessageQuery = { id: string } & (
+  { remoteJid: string } | { jids: string[] } | { anyChat: true }
+)
+
+export interface MediaMessageRow {
+  key: MessageKey
+  message: unknown
+  messageType: string | null
+  /** Unix seconds. */
+  messageTimestamp: number | null
+}
+
+/**
+ * The stored row of one message, by id, for the attachment download.
+ *
+ * Both callers send what this returns to Evolution as "the message to
+ * download", so the file that is fetched is exactly the row that was checked,
+ * and Evolution never looks the message up itself (with only an id it searches
+ * without a chat predicate or an ordering).
+ *
+ * The chat predicate is on `remoteJid` and only that. `remoteJidAlt` is the
+ * same person's other addressing form and is deliberately not matched: a scope
+ * is a list of `remoteJid`s (that is what the token stores and what the
+ * `read-messages` scope check compares), and matching the alternate would let a
+ * message in an out-of-scope chat through because it names an in-scope one.
+ * The predicate sits inside the CTE, before `DISTINCT ON`, so a copy of the
+ * same message id stored under an out-of-scope chat cannot be the survivor.
+ *
+ * The dedupe and its ordering are `listMessagesPage`'s, so the row returned for
+ * a message is the one a read of that chat shows. Parameterised SQL only; the
+ * account predicate is always present.
+ */
+export async function findMediaMessage(
+  instance: AppInstance,
+  query: MediaMessageQuery,
+): Promise<MediaMessageRow | undefined> {
+  if (!query.id) throw new Error('findMediaMessage needs a message id')
+
+  const sql = await evolutionDbFor(instance)
+  let chat: ReturnType<Sql>
+  if ('jids' in query) chat = sql`AND m.key->>'remoteJid' = ANY(${query.jids}::text[])`
+  else if ('remoteJid' in query) chat = sql`AND m.key->>'remoteJid' = ${query.remoteJid}`
+  else if (query.anyChat === true) chat = sql``
+  else throw new Error('findMediaMessage needs a chat scope')
+
+  const instanceId = await resolveEvolutionInstanceId(instance)
+
+  let rows: MediaMessageRow[]
+  try {
+    rows = await sql<MediaMessageRow[]>`
+      WITH deduped AS (
+        SELECT DISTINCT ON (m.key->>'id')
+               m.key, m.message, m."messageType", m."messageTimestamp",
+               ${bestNamed(sql)} AS named, m.id AS "rowId"
+        FROM "Message" m
+        WHERE m."instanceId" = ${instanceId}
+          AND m.key->>'id' = ${query.id}
+          ${chat}
+        ORDER BY m.key->>'id', named DESC, m."messageTimestamp" DESC, "rowId"
+      )
+      SELECT key, message, "messageType", "messageTimestamp" FROM deduped
+    `
+  }
+  catch (error) {
+    console.error('[media] Evolution database query failed:', error)
+    throw createError({
+      statusCode: 503,
+      statusMessage: 'Reading messages is temporarily unavailable',
+      cause: error,
+    })
+  }
+  return rows[0]
+}
+
+/**
  * The readable text of a message, as a `CROSS JOIN LATERAL ... AS t` yielding
  * `t.body` — null for a row that carries nothing renderable — and `t.filename`,
  * the file name of a document message (null otherwise).
