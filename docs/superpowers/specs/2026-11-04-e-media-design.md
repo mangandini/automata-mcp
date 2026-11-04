@@ -19,7 +19,7 @@ Casos reales: CL 2026-10-22 (monto en un `.xlsx` adjunto y en capturas `[image]`
 | Cómo llega el archivo | **Enlace temporal** a nuestra app con el nombre original. No basta con adjuntarlo en el chat (en Claude.ai normalmente no se puede descargar desde ahí). |
 | Quién abre el enlace | **Cualquiera que lo tenga**, sin iniciar sesión. La protección es la vida corta del enlace. |
 | Cuántas veces | **Varias veces dentro de 1 hora**, no un solo uso (las vistas previas de enlaces en teléfonos y apps lo consumirían). |
-| Dónde vive el archivo | **En ningún sitio nuestro.** Al abrir el enlace se vuelve a descargar de WhatsApp vía Evolution. El enlace puede fallar si WhatsApp ya borró el archivo o la conexión cayó; debe decirlo (a Claude, con la causa; en la página pública, sin revelar el estado de la cuenta: "WhatsApp no entregó el archivo ahora; puede haber expirado o la cuenta estar desconectada; pide que te lo reenvíen"). |
+| Dónde vive el archivo | **Nunca en disco ni en base de datos.** Se permite una **copia temporal en memoria** si mejora la experiencia (aclaración del usuario, 2026-11-04; ver "Copia temporal en memoria"). Sin copia, al abrir el enlace se vuelve a descargar de WhatsApp vía Evolution. El enlace puede fallar si WhatsApp ya borró el archivo o la conexión cayó; debe decirlo (a Claude, con la causa; en la página pública, sin revelar el estado de la cuenta: "WhatsApp no entregó el archivo ahora; puede haber expirado o la cuenta estar desconectada; pide que te lo reenvíen"). |
 | Tipos | **PDFs/documentos e imágenes.** Fuera: notas de voz, audio, video, stickers. |
 | Activación | **Opt-in por token.** Un token con "todas las herramientas" **no** recibe este tool automáticamente; hay que marcarlo. |
 
@@ -91,7 +91,12 @@ Casos reales: CL 2026-10-22 (monto en un `.xlsx` adjunto y en capturas `[image]`
 - Ruta excluida de `server/middleware/session.ts` (como `/mcp` y `/api/webhook/`), redactada en `redact.ts` / `plugins/redact-mcp.ts` (hoy solo `/mcp`), y throttle en memoria por IP (velocidad, no control; `clientIp` toma el último salto de `X-Forwarded-For`: confirmar que en Coolify hay un solo proxy).
 - **Logs fuera del proceso**: el proxy de Coolify (Traefik) o Railway registran el path con el token en sus propios logs de acceso; el criterio "no aparece en logs" cubre solo los de la app. Decirlo en `OPS.md` y en la descripción.
 - Cada llamada al tool crea un enlace nuevo. Filas vencidas se borran (tarea programada o al crear; mi decisión: al crear, `DELETE … WHERE expires_at < now() - 1 day`). Todo el estado en BD: vale con varias réplicas.
-- **Mi decisión:** sin búfer en memoria entre descargas (el usuario decidió no guardar bytes; la página intermedia ya evita ráfagas de bots). Residual aceptado: doble toque → dos descargas.
+- **Copia temporal en memoria** (permitida por el usuario si mejora la experiencia; parámetros, mi decisión):
+  - Al descargar (en el tool o en un `POST`), los bytes verificados (`fileSha256`) quedan en una caché **solo en memoria del proceso**, clave `instanceId` + `remoteJid` + `key.id`, **10 min** desde la última descarga y nunca más allá del `expires_at` del enlace.
+  - Así, abrir el enlace poco después de que Claude lo leyó no vuelve a pedir el archivo a WhatsApp (más rápido, y sigue funcionando si el teléfono deja de responder o el archivo expira en esos minutos); un doble toque o una segunda descarga tampoco.
+  - **Las comprobaciones del `POST` (paso 2, token vivo, scope, opt-in; paso 3, cupo) corren siempre antes de servir desde la caché**: la caché ahorra la descarga, nunca la autorización.
+  - Tope total (mi decisión: 100 MB, LRU) y ningún archivo por encima del tope de enlace; al vencer o expulsarse, se suelta la referencia. No se escribe a disco ni a BD; con varias réplicas cada una tiene la suya (una réplica sin la copia simplemente descarga).
+  - Se vacía la entrada si la descarga verificada no coincide o si el enlace se revoca en el `POST`.
 
 ### Opt-in
 
