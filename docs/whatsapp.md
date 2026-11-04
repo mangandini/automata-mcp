@@ -221,7 +221,7 @@ ordinary PDF and one cold 25 MB link download, all at once, cold cache.
 
 | Architecture | Runs | Peak anonymous memory | cgroup peak | Result |
 |---|---|---|---|---|
-| arm64 | 3 | 528-577 MiB | 536-633 MiB | survived every run, no OOM event |
+| arm64 | 4 (one with the link response held unread until the PDFs were done) | 528-577 MiB | 536-652 MiB | survived every run, no OOM event |
 | amd64 (emulated on an arm64 host) | 1 | 585 MiB | 608 MiB | survived, no OOM event |
 
 Not measured with one worker: a warm media cache (adds up to its size, 50 MB by

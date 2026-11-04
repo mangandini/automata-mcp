@@ -101,7 +101,8 @@ export async function selectTokenFacts(sql: Db, by: TokenLookup): Promise<McpTok
 }
 
 /**
- * The one definition of "expired": an expiry that is set and not strictly in
+ * The one definition of a token's "expired" (MCP tokens, and the link route
+ * through `isTokenLive`): an expiry that is set and not strictly in
  * the future. One that does not parse counts as expired (`NaN > now` is false),
  * so a malformed value fails closed on every credential path that asks.
  */
