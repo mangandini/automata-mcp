@@ -94,6 +94,28 @@ RUN /opt/node22/bin/node --version \
  && postgres --version \
  && pg_isready --version
 
+# Fails the build, not the first request, if the web app's native sharp binary
+# (libvips, musl) did not reach the Nitro output or cannot load under the Node 22
+# copied above, or if `unpdf` is not where the PDF worker will look for it. Same
+# check as apps/web/Dockerfile (change one, change both).
+RUN cd /app/web/.output/server \
+ && /opt/node22/bin/node --input-type=module -e '\
+    import sharp from "sharp"; \
+    import { createRequire } from "node:module"; \
+    import { existsSync, readFileSync } from "node:fs"; \
+    import { join } from "node:path"; \
+    import { pathToFileURL } from "node:url"; \
+    const jpeg = await sharp({ create: { width: 1, height: 1, channels: 3, background: "#fff" } }).jpeg().toBuffer(); \
+    if (jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw new Error("sharp did not encode a JPEG"); \
+    console.log("sharp", sharp.versions.sharp, "libvips", sharp.versions.vips, "-> jpeg", jpeg.length, "bytes"); \
+    const here = process.cwd(); \
+    const dir = (createRequire(pathToFileURL(join(here, "chunks", "_", "x.mjs"))).resolve.paths("unpdf") ?? []).map(p => join(p, "unpdf")).find(d => d.startsWith(here + "/") && existsSync(join(d, "package.json"))); \
+    if (!dir) throw new Error("unpdf is not under " + here + "/node_modules"); \
+    const entry = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).module; \
+    const { getDocumentProxy } = await import(pathToFileURL(join(dir, entry)).href); \
+    if (typeof getDocumentProxy !== "function") throw new Error("unpdf has no getDocumentProxy"); \
+    console.log("unpdf", dir.slice(here.length + 1), "->", entry)'
+
 # NITRO_PORT is deliberately not set, as in apps/web/Dockerfile: the web app
 # follows PORT, else 3000. The base image sets TZ=America/Sao_Paulo.
 ENV NODE_ENV=production NITRO_HOST=:: TZ=UTC

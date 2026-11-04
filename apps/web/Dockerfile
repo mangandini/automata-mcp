@@ -55,6 +55,31 @@ ENV NITRO_HOST=::
 # The Nitro output is self-contained; no node_modules needed.
 COPY --from=build /app/apps/web/.output ./.output
 
+# Fails the build, not the first request, if the native sharp binary (libvips,
+# musl) did not make it into the Nitro output or cannot load here, or if `unpdf`
+# is not where the PDF worker will look for it. Run from .output/server with the
+# runtime's own node, resolving `unpdf` the way server/utils/media-pdf.ts does
+# (up the node_modules chain from a module inside the bundle) and refusing a
+# copy found anywhere but under .output/server: nothing lies above it in the
+# image, so a copy only the workspace had would pass on a developer's machine.
+RUN cd /app/.output/server \
+ && node --input-type=module -e '\
+    import sharp from "sharp"; \
+    import { createRequire } from "node:module"; \
+    import { existsSync, readFileSync } from "node:fs"; \
+    import { join } from "node:path"; \
+    import { pathToFileURL } from "node:url"; \
+    const jpeg = await sharp({ create: { width: 1, height: 1, channels: 3, background: "#fff" } }).jpeg().toBuffer(); \
+    if (jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw new Error("sharp did not encode a JPEG"); \
+    console.log("sharp", sharp.versions.sharp, "libvips", sharp.versions.vips, "-> jpeg", jpeg.length, "bytes"); \
+    const here = process.cwd(); \
+    const dir = (createRequire(pathToFileURL(join(here, "chunks", "_", "x.mjs"))).resolve.paths("unpdf") ?? []).map(p => join(p, "unpdf")).find(d => d.startsWith(here + "/") && existsSync(join(d, "package.json"))); \
+    if (!dir) throw new Error("unpdf is not under " + here + "/node_modules"); \
+    const entry = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).module; \
+    const { getDocumentProxy } = await import(pathToFileURL(join(dir, entry)).href); \
+    if (typeof getDocumentProxy !== "function") throw new Error("unpdf has no getDocumentProxy"); \
+    console.log("unpdf", dir.slice(here.length + 1), "->", entry)'
+
 USER node
 EXPOSE 3000
 CMD ["node", ".output/server/index.mjs"]
