@@ -54,12 +54,13 @@ export async function readPdfPagesBounded(args: {
   readPage: (index: number) => Promise<string>
   maxChars: number
   maxMs?: number
+  yieldToEventLoop?: () => Promise<void>
 }): Promise<PdfExtraction> {
   const maxMs = args.maxMs ?? PDF_LIMITS.maxMs
   const startedAt = Date.now()
   const done: string[] = []
   const run = (pageCount: number, getPageText: (index: number) => Promise<string>, extra: { maxPages?: number } = {}) =>
-    extractPdfPages({ pageCount, getPageText, maxChars: args.maxChars, maxMs, ...extra })
+    extractPdfPages({ pageCount, getPageText, maxChars: args.maxChars, maxMs, yieldToEventLoop: args.yieldToEventLoop, ...extra })
 
   try {
     return await run(args.pageCount, async (index) => {
@@ -79,6 +80,8 @@ export async function readPdfPagesBounded(args: {
 
 export async function extractPdfForModel(bytes: Buffer, options: { maxChars: number }): Promise<PdfForModel> {
   // A copy: pdf.js may detach the buffer it is given, and the caller keeps these bytes (cache, link).
+  // One clock for opening and reading: the time cap is on the whole extraction.
+  const startedAt = Date.now()
   const loading = getDocumentProxy(new Uint8Array(bytes), PDF_OPTIONS)
   let pdf: Awaited<typeof loading>
   try {
@@ -93,6 +96,8 @@ export async function extractPdfForModel(bytes: Buffer, options: { maxChars: num
     const extraction = await readPdfPagesBounded({
       pageCount: pdf.numPages,
       maxChars: options.maxChars,
+      maxMs: PDF_LIMITS.maxMs - (Date.now() - startedAt),
+      yieldToEventLoop: () => new Promise<void>(resolve => setImmediate(resolve)),
       readPage: async (index) => {
         const page = await pdf.getPage(index + 1)
         try {
