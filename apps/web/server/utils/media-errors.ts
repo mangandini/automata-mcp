@@ -75,20 +75,25 @@ export function evolutionErrorText(body: unknown): string {
 }
 
 /**
- * `timedOut` is our own 30 s timer and wins over any text. The CDN's 404/410
- * only ever appears inside Evolution's 400 text, so the status code of the
- * HTTP answer is not used: it is always 400.
+ * `timedOut` is our own 30 s timer and wins over any text. The HTTP status of
+ * the answer is not used: it is always 400. What 2.3.7 really sends for a file
+ * WhatsApp no longer serves is `Error: Failed to fetch stream from <signed CDN
+ * url>` (Baileys rc.9 throws that on any non-OK CDN status, the code is not in
+ * the text); the `status code 404|410` form is older. The text can also mean
+ * some other CDN failure, which is why the `expired` message says "may have
+ * expired". It holds a signed URL: it goes to the server log only, never into
+ * anything the model or a link visitor reads.
  */
 export function classifyEvolutionFailure(input: { status?: number, text?: string, timedOut?: boolean }): MediaFailureKind {
   if (input.timedOut) return 'timeout'
   const text = input.text ?? ''
   if (/message not found/i.test(text) || /not of the media type/i.test(text)) return 'internal'
-  if (/status code (404|410)\b/i.test(text)) return 'expired'
+  if (/failed to fetch stream from/i.test(text) || /status code (404|410)\b/i.test(text)) return 'expired'
   return 'unknown'
 }
 
 const MESSAGES: Record<MediaFailureKind, { status: number, message: string }> = {
-  expired: { status: 404, message: 'WhatsApp no longer has this file. Ask the sender to send it again.' },
+  expired: { status: 404, message: 'This file is no longer available from WhatsApp (it may have expired). Ask the sender to send it again.' },
   timeout: { status: 504, message: 'WhatsApp did not answer within 30 seconds, so the file may no longer be available. Try again later.' },
   cooldown: { status: 429, message: 'This file was requested a moment ago and WhatsApp did not answer. Wait about two minutes before asking for it again.' },
   busy: { status: 503, message: 'The server is busy with other downloads. Try again in a few seconds.' },
@@ -100,18 +105,24 @@ const MESSAGES: Record<MediaFailureKind, { status: number, message: string }> = 
 }
 
 const DISCONNECTED_CAUSES: ReadonlySet<MediaFailureKind> = new Set(['expired', 'timeout', 'unknown'])
+/** States a live read really returned for a session that is not working. */
+const DOWN_STATES: ReadonlySet<string> = new Set(['close', 'connecting'])
 
 /**
  * The answer for the model, with the HTTP status the link route uses. The
  * account state is appended only where a dropped session is a plausible cause;
- * for "busy" or "too large" it would be noise that points the wrong way.
- * The public link route must NOT pass `accountState`: the public page never
- * reveals the state of the account, only authenticated callers may.
+ * for "busy" or "too large" it would be noise that points the wrong way. Only
+ * a state actually observed as down is called a disconnect; `unknown` (the live
+ * read itself failed) says so instead of asserting one, and anything else is
+ * left out. The public link route must NOT pass `accountState`: the public page
+ * never reveals the state of the account, only authenticated callers may.
  */
 export function mediaFailureMessage(kind: MediaFailureKind, accountState?: string): { status: number, message: string } {
   const { status, message } = MESSAGES[kind]
-  if (DISCONNECTED_CAUSES.has(kind) && accountState !== undefined && accountState !== 'open') {
+  if (!DISCONNECTED_CAUSES.has(kind) || accountState === undefined) return { status, message }
+  if (DOWN_STATES.has(accountState)) {
     return { status, message: `${message} The WhatsApp account is currently disconnected (state: ${accountState}), which is the likely cause.` }
   }
+  if (accountState === 'unknown') return { status, message: `${message} The state of the WhatsApp account could not be read.` }
   return { status, message }
 }
