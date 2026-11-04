@@ -1,5 +1,6 @@
 import { keepOptInNames } from '#shared/tool-optin'
 import type { AppMcpToken, Db } from './app-db'
+import { isTokenExpired } from './mcp-auth'
 import type { McpScope } from './mcp-scope'
 import type { ScopeInput } from './scope-schema'
 
@@ -34,7 +35,7 @@ export interface PublicToken {
 }
 
 export function toPublicToken(token: AppMcpToken, emails?: Map<string, string>): PublicToken {
-  const expired = Boolean(token.expires_at) && new Date(token.expires_at!).getTime() <= Date.now()
+  const expired = isTokenExpired(token.expires_at)
   return {
     id: token.id,
     label: token.label || 'Untitled token',
@@ -161,7 +162,7 @@ export async function rotateToken(token: AppMcpToken): Promise<{ token: string, 
       statusMessage: 'This token has been revoked. Ask an admin for a new one instead.',
     })
   }
-  if (token.expires_at && new Date(token.expires_at).getTime() <= Date.now()) {
+  if (isTokenExpired(token.expires_at)) {
     throw createError({
       statusCode: 422,
       statusMessage: 'This token has expired, so a new secret for it would not work. '

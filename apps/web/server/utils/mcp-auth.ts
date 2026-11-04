@@ -77,6 +77,10 @@ export type TokenLookup = { hash: string } | { id: string }
  * `assigned` is about the token's own `instance`, and `member_org` is the org of
  * the holder's membership: a caller compares that against the org of the
  * instance **of the token**, never one it was handed from somewhere else.
+ *
+ * Throws on a database failure; callers answer that with a 503
+ * (`appDbUnavailable`), never with a refusal (a 401 or an "invalid link"),
+ * since the token may be perfectly good.
  */
 export async function selectTokenFacts(sql: Db, by: TokenLookup): Promise<McpTokenFacts | undefined> {
   const [facts] = await sql<McpTokenFacts[]>`
@@ -96,10 +100,19 @@ export async function selectTokenFacts(sql: Db, by: TokenLookup): Promise<McpTok
   return facts
 }
 
+/**
+ * The one definition of "expired": an expiry that is set and not strictly in
+ * the future. One that does not parse counts as expired (`NaN > now` is false),
+ * so a malformed value fails closed on every credential path that asks.
+ */
+export function isTokenExpired(expiresAt: string | undefined, now: number = Date.now()): boolean {
+  if (!expiresAt) return false
+  return !(new Date(expiresAt).getTime() > now)
+}
+
 /** Neither revoked nor past its expiry. Says nothing about whether the holder still reaches the connection. */
 export function isTokenLive(facts: Pick<McpTokenFacts, 'revoked' | 'expires_at'>, now: number = Date.now()): boolean {
-  if (facts.revoked) return false
-  return !(facts.expires_at && new Date(facts.expires_at).getTime() <= now)
+  return !facts.revoked && !isTokenExpired(facts.expires_at, now)
 }
 
 /** Mint a new token. The plaintext is returned once and never stored. */
