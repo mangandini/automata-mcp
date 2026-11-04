@@ -23,24 +23,47 @@ export function foldForSearch(text: string): string {
  * (U+0300-U+036F) go at the end of FROM with no counterpart in TO, which
  * makes `translate` delete them, covering NFD text.
  */
-function buildSqlFold(): { from: string; to: string } {
+function buildSqlFold(): { from: string; to: string; map: Map<string, string> } {
   let from = ''
   let to = ''
+  const map = new Map<string, string>()
   for (let code = 0x00c0; code <= 0x024f; code++) {
     const c = String.fromCodePoint(code)
     const folded = foldForSearch(c)
     if ([...folded].length === 1 && folded !== c) {
       from += c
       to += folded
+      map.set(c, folded)
     }
   }
   for (let code = 0x0300; code <= 0x036f; code++) from += String.fromCodePoint(code)
-  return { from, to }
+  return { from, to, map }
 }
 
 const SQL_FOLD = buildSqlFold()
 export const SQL_FOLD_FROM: string = SQL_FOLD.from
 export const SQL_FOLD_TO: string = SQL_FOLD.to
+
+/**
+ * A needle folded exactly the way the SQL `translate(body, FROM, TO)` folds the
+ * stored text: lowercase, then the same table, with combining marks dropped.
+ *
+ * `foldForSearch` is wider than the table (it also strips the accent of `й`, a
+ * Greek tonos, Vietnamese vowels — characters the SQL side leaves alone), so a
+ * needle bound for SQL must not use it: "мой" would become "мои" and never match
+ * the stored "мой". Whatever the table does not cover is left alone on both sides.
+ * Use this for every needle compared against `translate`d text; keep
+ * `foldForSearch` for in-memory matching, where both sides go through it.
+ */
+export function foldForSql(text: string): string {
+  let out = ''
+  for (const char of text.toLowerCase()) {
+    const code = char.codePointAt(0)!
+    if (code >= 0x0300 && code <= 0x036f) continue
+    out += SQL_FOLD.map.get(char) ?? char
+  }
+  return out
+}
 
 /**
  * Whether `needle` appears, folded, inside any of `fields`. An empty or

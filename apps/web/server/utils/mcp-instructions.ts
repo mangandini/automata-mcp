@@ -58,8 +58,8 @@ export const WHATSAPP_INSTRUCTIONS = [
   '`read-messages`; if the response lists `authorCandidates`, ask the user which person is meant',
   'rather than choosing. To see what surrounds a hit, call `read-messages` with the hit\'s `jid` and',
   'its id as `around`.',
-  'Before concluding that nothing was found, follow `hasMore`/`nextPage`, passing `until` as the',
-  '`window.until` of the previous page, so every page comes from the same range.',
+  'Before concluding that nothing was found, follow `hasMore`/`nextPage`, and when the response has a',
+  '`window`, pass `until` as its `window.until`, so every page comes from the same range.',
 ].join(' ')
 
 export const POSTGRES_INSTRUCTIONS = [

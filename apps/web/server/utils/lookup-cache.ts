@@ -51,6 +51,9 @@ export function staleWhileFailing<T>(options: StaleCacheOptions<T>) {
 
     const loaded = await load()
 
+    // Values are handed out by identity, never copied: a caller may compare the
+    // result with `empty` (`mentions.ts` does, to tell "lookup failed" from
+    // "answered with nothing"), so a failed lookup must return that very object.
     if (loaded === undefined) {
       const value = cached?.value ?? options.empty
       entries.set(key, { expiresAt: Date.now() + options.retryTtlMs, value })

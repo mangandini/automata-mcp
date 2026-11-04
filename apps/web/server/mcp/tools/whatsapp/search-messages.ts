@@ -65,7 +65,7 @@ export default defineKindTool({
     query: z.string().optional().describe('Words to look for, separated by spaces; each at least 2 characters. Required unless `author` is given.'),
     match: z.enum(['all', 'any']).default('all').describe('`all`: every word must appear in the message. `any`: at least one of them.'),
     jid: z.string().optional().describe('Restrict to one chat: a `jid` from list-chats, or a phone number. Omit to search every chat.'),
-    author: z.string().optional().describe('Only messages sent by this group member: a name or a phone number. Needs `jid` of a group.'),
+    author: z.string().min(1).optional().describe('Only messages sent by this group member: a name or a phone number. Needs `jid` of a group.'),
     since: z.string().optional().describe('Only messages at or after this date, e.g. 2024-03-01 or 2024-03-01T12:00:00Z'),
     until: z.string().optional().describe('Only messages at or before this date. Pass back the `window.until` from a previous page when paging.'),
     fromMe: z.boolean().optional().describe('true for only messages you sent, false for only messages you received'),
@@ -89,7 +89,7 @@ export default defineKindTool({
     // Too short to be a useful needle, or nothing left once accents and marks are
     // folded away (a lone combining mark): either would match nearly everything.
     for (const term of terms) {
-      if (term.length < 2 || !foldForSearch(term).trim()) {
+      if (term.length < 2 || !foldForSql(term).trim()) {
         throw createError({
           statusCode: 400,
           message: `The search word "${term}" is too short: every word needs at least 2 letters or digits.`,
@@ -134,8 +134,11 @@ export default defineKindTool({
         hasMore: false,
         truncated: false,
         authorCandidates: resolution.candidates,
-        note: `More than one member matches the author "${author}", so nothing was searched. `
+        note: [
+          `More than one member matches the author "${author}", so nothing was searched. `
           + 'Call again with a more specific name or the person\'s phone number.',
+          resolution.note,
+        ].filter(Boolean).join(' '),
       }
     }
     if (resolution?.kind === 'none') {

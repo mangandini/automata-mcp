@@ -2,7 +2,7 @@ import type { Sql } from 'postgres'
 import postgres from 'postgres'
 import type { AppInstance } from './app-db'
 import { mentionedJidsOf } from './mentions'
-import { foldForSearch, SQL_FOLD_FROM, SQL_FOLD_TO } from './search-text'
+import { foldForSql, SQL_FOLD_FROM, SQL_FOLD_TO } from './search-text'
 
 /**
  * Read-only access to Evolution's own Postgres — every message this app reads.
@@ -207,8 +207,8 @@ export async function resolveEvolutionInstanceId(instance: AppInstance): Promise
  * `…@lid` in one copy of a message and `…@s.whatsapp.net` in another, and
  * comparing the part before the `@` is what `authorName` already does for its
  * directory. It also means this module builds and compares no JID form, which the
- * repo forbids doing locally. `pushName` (already folded) is the fallback and is
- * read only when `identities` is empty. A filter with neither matches nothing.
+ * repo forbids doing locally. `pushName` (as typed; folded when the query is built) is the
+ * fallback and is read only when `identities` is empty. A filter with neither matches nothing.
  */
 export interface AuthorFilter {
   identities: string[]
@@ -296,7 +296,7 @@ export async function searchMessages(
   const instanceId = await resolveEvolutionInstanceId(instance)
 
   const patterns = options.terms.length
-    ? options.terms.map(term => `%${escapeLike(foldForSearch(term))}%`)
+    ? options.terms.map(term => `%${escapeLike(foldForSql(term))}%`)
     : undefined
   const since = toUnixSeconds(options.since, 'since')
   const until = toUnixSeconds(options.until, 'until')
@@ -360,11 +360,12 @@ export async function searchMessages(
           -- Control records are excluded by intent, not only by accident. Today
           -- this is a no-op: no arm above reads anything out of a non-edit
           -- protocolMessage, so such a row has no body and no filename, and the
-          -- (body OR filename) IS NOT NULL predicate above already dropped it. It is here so a future arm
-          -- cannot quietly start surfacing bookkeeping. It cannot drop an unwrapped edit — any row
-          -- whose body came from the edit arms has editedMessage non-null. Never
-          -- let this grow into something that inspects where the body came from;
-          -- that is where it would start dropping real edits.
+          -- (body OR filename) IS NOT NULL predicate above already dropped it.
+          -- It is here so a future arm cannot quietly start surfacing
+          -- bookkeeping. It cannot drop an unwrapped edit: any row whose body
+          -- came from the edit arms has editedMessage non-null. Never let this
+          -- grow into something that inspects where the body came from; that is
+          -- where it would start dropping real edits.
           AND (m.message->'protocolMessage' IS NULL
                OR m.message->'protocolMessage'->'editedMessage' IS NOT NULL)
         ORDER BY m.key->>'id', named DESC, m."messageTimestamp" DESC, "rowId"
@@ -587,7 +588,7 @@ export async function listMessagesPage(
   // Joined only when there is something to match, so an ordinary read pays
   // nothing for it. The body expression is shared with `searchMessages`.
   const terms = options.terms?.length ? options.terms : undefined
-  const patterns = terms?.map(term => `%${escapeLike(foldForSearch(term))}%`)
+  const patterns = terms?.map(term => `%${escapeLike(foldForSql(term))}%`)
 
   // The tiebreaker travels with the direction. Evolution's own ordering has
   // none, and rows sharing a timestamp then land on two pages or on neither —
@@ -852,7 +853,7 @@ function authorPredicate(sql: Sql, author: AuthorFilter | undefined) {
                OR split_part(m.key->>'participantAlt', '@', 1) = ANY(${identities}::text[]))`
   }
 
-  const name = author.pushName ? foldForSearch(author.pushName).trim() : ''
+  const name = author.pushName ? foldForSql(author.pushName).trim() : ''
   if (name) {
     return sql`AND (m.key->>'fromMe')::boolean = false
           AND ${fold(sql, sql`m."pushName"`)} ILIKE ${`%${escapeLike(name)}%`}`
@@ -863,7 +864,7 @@ function authorPredicate(sql: Sql, author: AuthorFilter | undefined) {
 
 /**
  * The distinct (identity, `pushName`) pairs that posted under a name containing
- * `foldedName` in one chat, for `resolveAuthor` to tell one person from two when
+ * `name` (as typed; folded here the way the SQL folds `pushName`) in one chat, for `resolveAuthor` to tell one person from two when
  * the participant list could not.
  *
  * Group members are mostly not saved contacts, so what they publish as their own
@@ -877,12 +878,12 @@ function authorPredicate(sql: Sql, author: AuthorFilter | undefined) {
  */
 export async function distinctSenders(
   instance: AppInstance,
-  params: { jid: string, foldedName: string },
+  params: { jid: string, name: string },
 ): Promise<Array<{ identity: string, pushName: string }>> {
   const sql = await evolutionDbFor(instance)
   const instanceId = await resolveEvolutionInstanceId(instance)
 
-  const needle = foldForSearch(params.foldedName).trim()
+  const needle = foldForSql(params.name).trim()
   if (!needle) return []
 
   try {
@@ -914,10 +915,11 @@ export async function distinctSenders(
 }
 
 /**
- * Accent-folds `expr` in SQL with the same table `foldForSearch` applies in JS,
+ * Accent-folds `expr` in SQL with the table `foldForSql` applies to needles in JS,
  * passed as bind parameters. It does not lowercase: ASCII capitals are not in
  * the table, so the comparison stays `ILIKE` against needles already folded in
- * JS. Module-level so other columns (a sender's `pushName`) fold identically.
+ * JS with `foldForSql`. Module-level so other columns (a sender's `pushName`)
+ * fold identically.
  */
 function fold(sql: Sql, expr: ReturnType<Sql>) {
   return sql`translate(${expr}, ${SQL_FOLD_FROM}, ${SQL_FOLD_TO})`

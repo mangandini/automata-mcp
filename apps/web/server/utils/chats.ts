@@ -647,8 +647,10 @@ async function shapeRecords(
  * The messages around one message of a chat, oldest first, the requested one
  * flagged `target: true`.
  *
- * `evolution-db.ts` finds the neighbours (see `listMessageRecordsAround` there; named differently because Nitro auto-imports both files' exports and a duplicate name makes one silently win); the
- * shaping is `shapeRecords`, the same as `listMessages`. If the requested message
+ * `evolution-db.ts` finds the neighbours (see `listMessageRecordsAround` there;
+ * named differently because Nitro auto-imports both files' exports and a
+ * duplicate name makes one silently win); the shaping is `shapeRecords`, the same
+ * as `listMessages`. If the requested message
  * exists but is a control record, it is not a readable message: the response says
  * `found: true` with `targetUnreadable: true` and no entry flagged `target`,
  * rather than dropping it silently — "not found" would be a false statement and

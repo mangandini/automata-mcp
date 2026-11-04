@@ -77,7 +77,7 @@ export default defineKindTool({
     page: z.number().int().min(1).default(1).describe('1-based page of `limit` messages, counting back from the newest. Walk this up while `hasMore` is true.'),
     since: z.string().optional().describe('Only messages at or after this date, e.g. 2024-03-01 or 2024-03-01T12:00:00Z'),
     until: z.string().optional().describe('Only messages at or before this date. Pass back the `window.until` from a previous page when paging a range.'),
-    author: z.string().optional().describe('Only messages sent by this group member: a name or a phone number. Needs the `jid` of a group. Not compatible with `around`.'),
+    author: z.string().min(1).optional().describe('Only messages sent by this group member: a name or a phone number. Needs the `jid` of a group. Not compatible with `around`.'),
     around: z.string().min(1).optional().describe('A message id: return the messages around it instead of a page. Not compatible with `page`, `since`, `until` or `author`.'),
     before: z.number().int().min(0).max(50).optional().describe('With `around`: messages before the target (default 10).'),
     after: z.number().int().min(0).max(50).optional().describe('With `around`: messages after the target (default 10).'),
@@ -154,7 +154,10 @@ export default defineKindTool({
         ...(resolution.kind === 'ambiguous' && { authorCandidates: resolution.candidates }),
         messages: [],
         note: ambiguous
-          ? `More than one member matches the author "${author}", so nothing was read. Call again with a more specific name or the person's phone number.`
+          ? [
+              `More than one member matches the author "${author}", so nothing was read. Call again with a more specific name or the person's phone number.`,
+              resolution.note,
+            ].filter(Boolean).join(' ')
           : [`No member of this group matches the author "${author}", so nothing was read.`, resolution.note].filter(Boolean).join(' '),
       }
     }
@@ -265,7 +268,11 @@ async function readAround(
     found.targetUnreadable
       ? 'The requested message exists but is a WhatsApp control record (deletion, timer change, key exchange or similar) with nothing to read, so no message is flagged as the target; the messages around it are returned.'
       : undefined,
-    `The window may hold fewer than ${before} before / ${after} after readable messages when neighbouring records are control records${dropped > 0 ? ` (${dropped} left out here, counted in protocolMessagesExcluded)` : ''}.`,
+    // Only when something really was left out: a note present on every response
+    // teaches the caller to skip notes.
+    dropped > 0
+      ? `The window holds fewer than ${before} before / ${after} after readable messages because ${dropped} neighbouring control record${dropped === 1 ? ' was' : 's were'} left out (counted in protocolMessagesExcluded).`
+      : undefined,
   ].filter((note): note is string => Boolean(note))
 
   return {
@@ -279,7 +286,7 @@ async function readAround(
     hasMoreAfter: found.hasMoreAfter,
     ...(dropped > 0 && { protocolMessagesExcluded: dropped }),
     ...(found.targetUnreadable && { targetUnreadable: true }),
-    note: notes.join(' '),
+    ...(notes.length > 0 && { note: notes.join(' ') }),
     ...(!includeReactions && { reactionsExcluded: true }),
     messages: found.messages,
   }
