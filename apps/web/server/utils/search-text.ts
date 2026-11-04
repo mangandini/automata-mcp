@@ -23,7 +23,7 @@ export function foldForSearch(text: string): string {
  * (U+0300-U+036F) go at the end of FROM with no counterpart in TO, which
  * makes `translate` delete them, covering NFD text.
  */
-function buildSqlFold(): { from: string; to: string; map: Map<string, string> } {
+function buildSqlFold(): { from: string, to: string, map: Map<string, string> } {
   let from = ''
   let to = ''
   const map = new Map<string, string>()
@@ -43,6 +43,69 @@ function buildSqlFold(): { from: string; to: string; map: Map<string, string> } 
 const SQL_FOLD = buildSqlFold()
 export const SQL_FOLD_FROM: string = SQL_FOLD.from
 export const SQL_FOLD_TO: string = SQL_FOLD.to
+
+/**
+ * The same table as `SQL_FOLD_FROM`/`SQL_FOLD_TO`, cut into stages by how common
+ * the characters are, for the SQL side to apply cheapest-first.
+ *
+ * Why. `translate` takes time proportional to (characters in the text) x (length
+ * of FROM), because every character of the text is compared against FROM — and
+ * nearly all of them, the plain ones, are compared against all of it. With the
+ * whole table (about 440 characters) that was ~100 µs per message: searching a
+ * 74,000-message account spent 7 of its 8.5 seconds folding. A regex character
+ * class costs almost nothing per character, so the SQL first asks "does this
+ * text contain anything the table maps?" — most messages do not — and, when it
+ * does, runs only as much of the table as the text needs.
+ *
+ * Stage 0 is what Spanish needs, stage 1 the rest of the Latin-1 letters
+ * (Portuguese, French, Italian, German...), stage 2 everything else, plus the
+ * combining marks, which have no counterpart and so are deleted. The stages
+ * partition `SQL_FOLD_FROM`; they are applied in order, one `translate` each,
+ * which is the same function as the single `translate` over the whole table
+ * provided no stage writes a character a later stage would rewrite — asserted
+ * below, at load, rather than assumed. `remainder` is a regex character class
+ * of the characters the stages after this one handle: a text that does not match
+ * it needs no later stage. Empty for the last stage, which has none after it.
+ */
+const SQL_FOLD_CORE = 'áéíóúüñÁÉÍÓÚÜÑ'
+
+function buildSqlFoldStages(): { from: string, to: string, remainder: string }[] {
+  const from: string[][] = [[], [], []]
+  const to: string[][] = [[], [], []]
+  const letters = [...SQL_FOLD_FROM].slice(0, [...SQL_FOLD_TO].length)
+  const marks = [...SQL_FOLD_FROM].slice(letters.length)
+  letters.forEach((c, i) => {
+    const stage = SQL_FOLD_CORE.includes(c) ? 0 : c.codePointAt(0)! < 0x100 ? 1 : 2
+    from[stage]!.push(c)
+    to[stage]!.push([...SQL_FOLD_TO][i]!)
+  })
+  from[2]!.push(...marks)
+
+  const stages = from.map((f, k) => ({
+    from: f.join(''),
+    to: to[k]!.join(''),
+    remainder: k === from.length - 1 ? '' : `[${from.slice(k + 1).flat().join('')}]`,
+  }))
+
+  // Fail at load, not in a query: a stage must never emit a character that a
+  // later stage maps, or two translates would fold twice what one folds once.
+  // A character class built from the table must also not contain anything that
+  // is special inside one.
+  for (let k = 0; k < stages.length; k++) {
+    for (const out of to[k]!) {
+      if (from.slice(k + 1).some(later => later.includes(out))) {
+        throw new Error(`SQL fold stage ${k} writes ${out}, which a later stage rewrites`)
+      }
+    }
+  }
+  if (/[\]\\^\-[]/.test(SQL_FOLD_FROM)) throw new Error('SQL fold table holds a character special in a regex class')
+  return stages
+}
+
+export const SQL_FOLD_STAGES = buildSqlFoldStages()
+
+/** A regex character class matching any character the table maps or deletes. */
+export const SQL_FOLD_ANY = `[${SQL_FOLD_FROM}]`
 
 /**
  * A needle folded exactly the way the SQL `translate(body, FROM, TO)` folds the

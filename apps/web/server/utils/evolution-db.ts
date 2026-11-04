@@ -2,7 +2,7 @@ import type { Sql } from 'postgres'
 import postgres from 'postgres'
 import type { AppInstance } from './app-db'
 import { mentionedJidsOf } from './mentions'
-import { foldForSql, SQL_FOLD_FROM, SQL_FOLD_TO } from './search-text'
+import { foldForSql, SQL_FOLD_ANY, SQL_FOLD_STAGES } from './search-text'
 
 /**
  * Read-only access to Evolution's own Postgres — every message this app reads.
@@ -402,8 +402,10 @@ export async function searchMessages(
         : undefined,
       type: row.messageType ?? undefined,
       // A document sent without a caption has no body; its file name is what
-      // matched, so it is also what the hit shows.
-      text: row.body ?? row.filename ?? '',
+      // matched, so it is also what the hit shows. `||`, not `??`: a client may
+      // send the caption as an empty string, which is a body that is not null
+      // and shows nothing — the file name has to win over it too.
+      text: row.body || row.filename || '',
       mentioned: mentionedJidsOf(row.mentioned),
       ...(row.editOf && { editOf: row.editOf }),
     })),
@@ -761,11 +763,27 @@ interface AroundRow extends MessageRecord { side: 'older' | 'anchor' | 'newer', 
  * terms to match). Two copies of this COALESCE would drift, and a search that
  * reads one definition while a listing reads another is a set of results that
  * cannot be paged.
+ *
+ * Two things here are about cost, not meaning. The lookups are wrapped in a
+ * function (`jsonb_to_record` over a one-row object) so that they run once per
+ * row. Written as plain expressions, Postgres pastes them into every place `t`
+ * is read — the not-null test, the fold (which reads its input several times),
+ * the select list — and a message that is not plain text pays for its ~30
+ * `jsonb` lookups each time: a large `message` is TOASTed and every lookup
+ * fetches it again. A function scan cannot be pasted. (`OFFSET 0` on a subquery
+ * does the same and is a little cheaper on a single core, but Postgres never
+ * runs a subquery scan inside a parallel worker, so it kept this stage in the
+ * leader: 2.4x the old time with parallel workers against 1.2x with this.)
+ * The cheap predicates on `m` still run first, so only rows that survived them
+ * pay. And the file name is
+ * looked up only for messages that have one of the four top-level keys every
+ * file-name arm starts from; for the rest — most of them — it was ten lookups
+ * that could only return NULL. The gate is a superset test, so it can be wrong
+ * only by running the arms for nothing, never by skipping one.
  */
 function messageBodyJoin(sql: Sql) {
   return sql`
-    CROSS JOIN LATERAL (
-      SELECT COALESCE(
+    CROSS JOIN LATERAL jsonb_to_record(jsonb_build_object('body', COALESCE(
         m.message->>'conversation',
         m.message->'extendedTextMessage'->>'text',
         m.message->'imageMessage'->>'caption',
@@ -806,12 +824,12 @@ function messageBodyJoin(sql: Sql) {
         -- so an ordinary text row still stops at the first arm — the extra
         -- lookups are paid only by rows that produce no body at all, which
         -- this scan already touches and discards.
-      ) AS body,
+      ),
       -- The file name of a document, so "contrato.pdf" is findable although the
       -- document has no caption. fileName first, title as the fallback some
       -- clients fill instead. Explicit paths only, for the reason above; the
       -- same wrappers as the body arms.
-      COALESCE(
+      'filename', CASE WHEN m.message ?| ARRAY['documentMessage', 'documentWithCaptionMessage', 'associatedChildMessage', 'protocolMessage'] THEN COALESCE(
         m.message->'documentMessage'->>'fileName',
         m.message->'documentMessage'->>'title',
         m.message->'documentWithCaptionMessage'->'message'->'documentMessage'->>'fileName',
@@ -822,8 +840,7 @@ function messageBodyJoin(sql: Sql) {
         m.message->'protocolMessage'->'editedMessage'->'documentMessage'->>'title',
         m.message->'associatedChildMessage'->'message'->'protocolMessage'->'editedMessage'->'documentMessage'->>'fileName',
         m.message->'associatedChildMessage'->'message'->'protocolMessage'->'editedMessage'->'documentMessage'->>'title'
-      ) AS filename
-    ) t`
+      ) END)) AS t(body text, filename text)`
 }
 
 /**
@@ -920,9 +937,38 @@ export async function distinctSenders(
  * the table, so the comparison stays `ILIKE` against needles already folded in
  * JS with `foldForSql`. Module-level so other columns (a sender's `pushName`)
  * fold identically.
+ *
+ * The result is the same as `translate(expr, FROM, TO)` over the whole table,
+ * but not computed that way. That `translate` compares every character of the
+ * text against ~440 table entries — about 100 µs per message, and the fold ran
+ * over every message of the account before anything else could drop it. A regex
+ * class test is nearly free per character, so: a text with nothing the table
+ * maps (most of them) is returned as it is; one that does gets only the stages
+ * of the table it needs (`SQL_FOLD_STAGES`, cheapest first). Same function —
+ * a text with no character of a stage is unchanged by that stage's `translate`.
+ *
+ * `expr` appears several times in the SQL this builds. Pass a column, or an
+ * expression the planner evaluates once per row (see `messageBodyJoin`).
  */
 function fold(sql: Sql, expr: ReturnType<Sql>) {
-  return sql`translate(${expr}, ${SQL_FOLD_FROM}, ${SQL_FOLD_TO})`
+  const upTo = (last: number) => SQL_FOLD_STAGES
+    .slice(0, last + 1)
+    .reduce(
+      (text, stage) => sql`translate(${text}, ${stage.from}, ${stage.to})`,
+      expr,
+    )
+
+  // WHEN expr holds none of the characters stages k+1.. handle THEN stages 0..k.
+  const branches = SQL_FOLD_STAGES.slice(0, -1).reduce(
+    (acc, stage, k) => sql`${acc} WHEN ${expr} !~ ${stage.remainder} THEN ${upTo(k)}`,
+    sql``,
+  )
+
+  return sql`CASE
+    WHEN ${expr} !~ ${SQL_FOLD_ANY} THEN ${expr}
+    ${branches}
+    ELSE ${upTo(SQL_FOLD_STAGES.length - 1)}
+  END`
 }
 
 /**

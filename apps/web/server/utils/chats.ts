@@ -1359,7 +1359,9 @@ function previewOf(message: unknown): string | undefined {
   if (typeof m.videoMessage?.caption === 'string') return `[video] ${m.videoMessage.caption}`
   if (m.videoMessage) return '[video]'
   if (m.audioMessage) return '[voice message]'
-  if (m.documentMessage) return `[document] ${m.documentMessage.fileName ?? m.documentMessage.caption ?? ''}`.trim()
+  // `||`, not `??`: a client may send an empty string for the file name, which would
+  // otherwise win over a caption that is there.
+  if (m.documentMessage) return `[document] ${m.documentMessage.fileName || m.documentMessage.caption || ''}`.trim()
   if (m.stickerMessage) return '[sticker]'
   if (typeof m.reactionMessage?.text === 'string') return `[reaction] ${m.reactionMessage.text}`
 

@@ -118,7 +118,7 @@ Líneas aprox. entre paréntesis. Símbolos principales exportados.
 | `mentions.ts` | resolver @menciones desde `contextInfo`, nombres de autores, `groupPeople` (miembros de un grupo con todas sus identidades) |
 | `chat-target.ts` | `resolveChatTarget`: `jid` o número de teléfono → formas del chat (`@s.whatsapp.net` + `@lid`) con scope comprobado forma a forma; lo usan `read-messages` y `search-messages` |
 | `author-filter.ts` | `resolveAuthor`: `author` (nombre/número) dentro de un grupo → filtro SQL, candidatos o nada; participantes primero, `pushName` de respaldo |
-| `search-text.ts` | puro (cargable con `node`): `foldForSearch`, `matchesSearch`, `SQL_FOLD_FROM/TO` (derivados de `foldForSearch`) para el `translate()` del SQL y `foldForSql` (la misma tabla, para todo needle que se compara contra texto plegado en SQL) |
+| `search-text.ts` | puro (cargable con `node`): `foldForSearch`, `matchesSearch`, `SQL_FOLD_FROM/TO` (derivados de `foldForSearch`) y `SQL_FOLD_STAGES`/`SQL_FOLD_ANY` (la misma tabla en etapas, para el `fold()` del SQL: test regex primero, `translate` solo de las etapas que el texto necesita) y `foldForSql` (la misma tabla, para todo needle que se compara contra texto plegado en SQL) |
 
 ### Postgres (conexión kind `postgres`)
 | Archivo | Rol |
