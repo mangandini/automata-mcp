@@ -220,9 +220,9 @@ export function renderDownloadPage(args: { fileName: string, expiresAt: Date }):
   return layout('Download file', `<h1>Your file is ready</h1><p class="name">${escapeHtml(args.fileName.replace(FORMAT_CHARS, ''))}</p>${expiry}<form method="post"><button type="submit">Download</button></form>`)
 }
 
-export type NoticeKind = 'invalid' | 'limit' | 'busy' | 'unavailable' | 'rate' | 'too-large' | 'error'
+export type NoticeKind = 'invalid' | 'limit' | 'busy' | 'unavailable' | 'rate' | 'too-large' | 'error' | 'method'
 
-type NoticeStatus = 404 | 410 | 503 | 502 | 429 | 413
+type NoticeStatus = 404 | 405 | 410 | 503 | 502 | 429 | 413
 
 type Notice = { status: NoticeStatus, title: string, text: string, retryAfterSec?: number }
 
@@ -236,7 +236,8 @@ const NOTICES: Record<NoticeKind, Notice> = {
   'unavailable': { status: 502, title: 'File not available', text: 'WhatsApp did not deliver the file right now. It may have expired or the account may be disconnected. Ask for it to be sent again.' },
   'rate': { status: 429, title: 'Too many requests', text: 'Too many requests. Wait a moment and try again.', retryAfterSec: 60 },
   'too-large': { status: 413, title: 'File too large', text: 'The file is larger than the download limit.' },
-  'error': { status: 503, title: 'Temporarily unavailable', text: 'The download is temporarily unavailable, try again shortly.', retryAfterSec: 30 }
+  'error': { status: 503, title: 'Temporarily unavailable', text: 'The download is temporarily unavailable, try again shortly.', retryAfterSec: 30 },
+  'method': { status: 405, title: 'Not allowed', text: 'Open this link in a browser and use its Download button.' }
 }
 
 export function renderNoticePage(kind: NoticeKind): { status: NoticeStatus, html: string, retryAfterSec?: number } {

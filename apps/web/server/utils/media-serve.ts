@@ -6,6 +6,7 @@ import { authorizeMediaLink, claimMediaDownload, findMediaLinkByToken, refundMed
 import { cachedMedia, downloadVerifiedMedia, mediaLimits } from './media-download'
 import { MediaError, mediaFailureMessage } from './media-errors.ts'
 import { createRateLimiter } from './media-memory.ts'
+import { redactText } from './redact'
 import { mediaFileHeaders, MEDIA_BASE_HEADERS, MEDIA_PAGE_HEADERS, renderDownloadPage, renderNoticePage, safeDownloadName } from './media-safety.ts'
 import type { NoticeKind } from './media-safety.ts'
 import { classifyMedia } from './message-payload'
@@ -50,6 +51,9 @@ const limiter = createRateLimiter(RATE_LIMIT, RATE_WINDOW_MS)
 function notice(event: H3Event, kind: NoticeKind, retryAfterSec?: number): string {
   const page = renderNoticePage(kind)
   setResponseStatus(event, page.status)
+  // A page, never a half-announced file.
+  removeResponseHeader(event, 'Content-Disposition')
+  removeResponseHeader(event, 'Content-Length')
   setResponseHeaders(event, MEDIA_PAGE_HEADERS)
   const wait = retryAfterSec ?? page.retryAfterSec
   if (wait !== undefined) setResponseHeader(event, 'Retry-After', wait)
@@ -75,16 +79,21 @@ async function authorize(event: H3Event, link: AppMediaLink) {
  * The link lookup, the authorization, the claim and the message read log their
  * own failure (naming the step and the link id) and throw an H3 error; that
  * error becomes the `error` page here, so an unreadable database is never
- * "invalid link". Anything that is not an H3 error is a bug and goes to Nitro
- * unhandled, which redacts the URL.
+ * "invalid link". Anything else is a bug: it is logged here (redacted: its text
+ * was not written by us and could carry a path) and answered with the same
+ * page. Nothing on this route may reach Nitro's error handler, whose HTML page
+ * runs the app's scripts at the credential URL without this route's CSP.
  */
 async function answeringOutages<T extends string | Buffer>(event: H3Event, serve: () => Promise<T>): Promise<T | string> {
   try {
     return await serve()
   }
   catch (error) {
-    if (isError(error)) return notice(event, 'error')
-    throw error
+    if (!isError(error)) {
+      const text = error instanceof Error ? (error.stack ?? error.message) : String(error)
+      console.error(`[media-link] BUG: unexpected failure on the download route: ${redactText(text)}`)
+    }
+    return notice(event, 'error')
   }
 }
 
@@ -230,11 +239,14 @@ function failureNotice(event: H3Event, link: AppMediaLink, error: unknown): stri
  * Every other method on a link. Without a handler of their own these requests
  * fall through to the Nuxt renderer, which would answer with the app's login
  * page and write the whole path, token included, into its router warning; so
- * the route claims every method and says no itself.
+ * the route claims every method and says no itself, with a notice (returned,
+ * not thrown: a thrown 405 would reach that same renderer through Nitro's
+ * error handler).
  */
-export function refuseMediaMethod(event: H3Event): never {
-  setResponseHeaders(event, { ...MEDIA_BASE_HEADERS, Allow: 'GET, HEAD, POST' })
-  throw createError({ statusCode: 405, statusMessage: 'Method Not Allowed' })
+export function refuseMediaMethod(event: H3Event): string {
+  const page = notice(event, 'method')
+  setResponseHeader(event, 'Allow', 'GET, HEAD, POST')
+  return page
 }
 
 /** `/api/media/<anything>/<more>` (and the bare `/api/media`): nothing lives there; the same reason as above. */

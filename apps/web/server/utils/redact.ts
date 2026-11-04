@@ -39,6 +39,17 @@ export function redactPath(path: string | undefined): string {
   return `/mcp/${REDACTED}`
 }
 
+/**
+ * Free text (an error message, a stack) with every credential the app mints
+ * taken out: an `/api/media/...` path, and any `wamcp_` / `wamedia_` / `waorg_`
+ * token wherever it appears. For log lines whose text the app did not write.
+ */
+export function redactText(text: string): string {
+  return text
+    .replace(/\/api\/media\/[^\s"'`<>]*/g, `${MEDIA_PREFIX}${REDACTED}`)
+    .replace(/\b(wamcp|wamedia|waorg)_[A-Za-z0-9_-]+/g, `$1_${REDACTED}`)
+}
+
 export function redactHeaders(headers: Record<string, unknown> | undefined): Record<string, unknown> {
   if (!headers) return {}
   const out: Record<string, unknown> = {}
