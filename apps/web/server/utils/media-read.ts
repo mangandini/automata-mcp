@@ -157,8 +157,7 @@ export async function getMessageMedia(args: {
         notes.push(`The file is larger than the ${megabytes(readCap)} the connector reads, so only the download link is given.`)
       }
       else {
-        const failure = await describeMediaFailure(instance, error)
-        throw createError({ statusCode: failure.status, message: failure.message })
+        throw await mediaFailureError(instance, error)
       }
     }
   }
@@ -194,7 +193,7 @@ export async function getMessageMedia(args: {
           }
         }
         else {
-          notes.push(IMAGE_REFUSALS[prepared && !prepared.ok ? prepared.reason : 'unreadable'])
+          notes.push(IMAGE_REFUSALS[prepared?.ok === false ? prepared.reason : 'unreadable'])
         }
       }
     }
@@ -212,7 +211,7 @@ export async function getMessageMedia(args: {
           notes.push(describePdfCoverage(extracted))
         }
         else {
-          notes.push(PDF_REFUSALS[extracted ? extracted.reason : 'unreadable'])
+          notes.push(PDF_REFUSALS[extracted?.reason ?? 'unreadable'])
         }
       }
     }
@@ -241,18 +240,20 @@ export async function getMessageMedia(args: {
   }
 
   // 6. The answer, inside the response budget.
+  const size = bytes?.length ?? media.declaredSize
   const metadata = (note: string[]) => ({
     messageId,
     jid,
     type: kind,
     fileName,
     mimeType: linkMime,
-    ...((bytes?.length ?? media.declaredSize) !== undefined && { size: bytes?.length ?? media.declaredSize }),
+    ...(size !== undefined && { size }),
     ...(download && { download }),
     ...(note.length && { note: note.join(' ') }),
     ...(processing && { processing }),
   })
-  const head: TextBlock = { type: 'text', text: JSON.stringify(metadata(notes), null, 2) }
+  const render = (note: string[]): TextBlock => ({ type: 'text', text: JSON.stringify(metadata(note), null, 2) })
+  const head = render(notes)
   if (!block) return { content: [head] }
 
   const content: MediaToolContent['content'] = [head, block]
@@ -261,12 +262,13 @@ export async function getMessageMedia(args: {
   // The pieces are each sized under the budget with a reserve for this block,
   // so reaching here means the reserve was wrong. Give up the content, not the link.
   console.error(`[media] BUG: a ${kind} response was ${contentChars(content)} characters, over the ${RESPONSE_BUDGET_CHARS} budget; sending the link only`)
-  return {
-    content: [{
-      type: 'text',
-      text: JSON.stringify(metadata([...notes, 'The content did not fit in a response, so only the download link is given.']), null, 2),
-    }],
-  }
+  return { content: [render([...notes, 'The content did not fit in a response, so only the download link is given.'])] }
+}
+
+/** A failed download or a busy slot as the tool's error, with the live account state where it helps. */
+async function mediaFailureError(instance: AppInstance, error: unknown) {
+  const failure = await describeMediaFailure(instance, error)
+  return createError({ statusCode: failure.status, message: failure.message })
 }
 
 /**
@@ -280,10 +282,7 @@ async function inSlot<T>(instance: AppInstance, fn: () => Promise<T>): Promise<T
     return await withMediaSlot(fn)
   }
   catch (error) {
-    if (error instanceof MediaError) {
-      const failure = await describeMediaFailure(instance, error)
-      throw createError({ statusCode: failure.status, message: failure.message })
-    }
+    if (error instanceof MediaError) throw await mediaFailureError(instance, error)
     console.error(`[media] processing an attachment of connection ${instance.id} failed:`, error)
     return undefined
   }

@@ -43,6 +43,6 @@ export default defineKindTool({
   },
   handler: async ({ messageId }) => {
     const { instance, scope, tokenId } = useMcpAuth()
-    return await getMessageMedia({ instance, scope, tokenId, messageId })
+    return getMessageMedia({ instance, scope, tokenId, messageId })
   },
 })
