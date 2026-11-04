@@ -6,6 +6,7 @@ import type { MessageKey } from './evolution-db'
 // harmless because neither side uses the other at load time.
 import { getInstanceStatus } from './instances'
 import { parseEvolutionMediaBody, readBodyCapped, readBodyPrefix, sha256Matches } from './media-body.ts'
+import type { EvolutionMedia } from './media-body.ts'
 import { MEDIA_CACHE_DEFAULT, MEDIA_LINK_CAP_DEFAULT, MEDIA_READ_CAP_BYTES, maxResponseBodyBytes } from './media-budget.ts'
 import { classifyEvolutionFailure, evolutionErrorText, MediaError, mediaFailureMessage } from './media-errors.ts'
 import type { MediaFailureKind } from './media-errors.ts'
@@ -57,13 +58,7 @@ function mediaCache() {
 }
 const semaphore = createSemaphore(MAX_CONCURRENT, SLOT_WAIT_MS)
 const cooldown = createCooldown(COOLDOWN_MS)
-const inflight = createInflight<DownloadedMedia>()
-
-export interface DownloadedMedia {
-  bytes: Buffer
-  mimeType?: string
-  fileName?: string
-}
+const inflight = createInflight<EvolutionMedia>()
 
 /**
  * Bytes of a message's attachment, checked against the message's own
@@ -88,7 +83,7 @@ export async function downloadVerifiedMedia(
   instance: AppInstance,
   source: { key: MessageKey, inner: JsonRecord, sha256?: Uint8Array },
   options: { maxBytes: number },
-): Promise<DownloadedMedia> {
+): Promise<EvolutionMedia> {
   const { remoteJid, id } = source.key
   if (!remoteJid || !id) throw new MediaError('internal', 'The stored message has no id or chat.')
   const cacheKey = mediaCacheKey(instance.id, remoteJid, id)
@@ -96,7 +91,7 @@ export async function downloadVerifiedMedia(
   const hit = mediaCache().get(cacheKey)
   if (hit) {
     // Cached under the larger link cap, asked for under the smaller read cap.
-    if (hit.bytes.length > options.maxBytes) throw tooLarge()
+    if (hit.bytes.length > options.maxBytes) throw failure('too-large')
     return { bytes: hit.bytes, mimeType: hit.mimeType }
   }
 
@@ -124,10 +119,6 @@ export function evictMediaForInstance(instanceId: string): number {
   return mediaCache().evictInstance(instanceId)
 }
 
-function tooLarge(): MediaError {
-  return new MediaError('too-large', mediaFailureMessage('too-large').message)
-}
-
 function failure(kind: MediaFailureKind, extra?: { retryAfterSec?: number, evolutionText?: string }): MediaError {
   return new MediaError(kind, mediaFailureMessage(kind).message, extra)
 }
@@ -137,7 +128,7 @@ async function lead(
   source: { key: MessageKey, inner: JsonRecord, sha256?: Uint8Array },
   cacheKey: string,
   maxBytes: number,
-): Promise<DownloadedMedia> {
+): Promise<EvolutionMedia> {
   const remaining = cooldown.remainingMs(cacheKey)
   if (remaining > 0) throw failure('cooldown', { retryAfterSec: Math.ceil(remaining / 1000) })
 
@@ -166,7 +157,7 @@ async function lead(
 
       const body = await readBodyCapped(response.body, maxResponseBodyBytes(maxBytes))
       const media = parseEvolutionMediaBody(body)
-      if (media.bytes.length > maxBytes) throw tooLarge()
+      if (media.bytes.length > maxBytes) throw failure('too-large')
       // Never cached, never served.
       if (sha256Matches(media.bytes, source.sha256) === false) {
         console.error(`[media] checksum mismatch for message ${source.key.id} of connection ${instance.id}; discarded`)
