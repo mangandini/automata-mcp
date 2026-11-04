@@ -199,7 +199,7 @@ export function describePdfCoverage(r: PdfExtraction): string {
   if (!r.stoppedBy) return `Text of all ${r.pageCount} ${r.pageCount === 1 ? 'page' : 'pages'}.`
   // The char cap can cut the very last page: nothing is unread, but the page is incomplete.
   if (r.stoppedBy === 'chars' && r.pagesExtracted === r.pageCount) {
-    return `Text of all ${r.pageCount} pages, but the last one is cut short (${STOP_REASONS.chars.split(';')[0]}). The download link has the whole file.`
+    return `Text of all ${r.pageCount} pages, but the last one is cut short (response size limit). The download link has the whole file.`
   }
   return `Text of ${r.pagesExtracted} of ${r.pageCount} pages (${STOP_REASONS[r.stoppedBy]}); the rest was not read. The download link has the whole file.`
 }
