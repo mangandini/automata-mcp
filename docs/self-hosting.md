@@ -50,6 +50,20 @@ fails. The image is large (about 2 GB), most of it Evolution's.
 `PORT` may not be one of the internal ports above; the container refuses to
 start and says so.
 
+### Memory and architecture
+
+Give the container **at least 2 GiB** (`docker run --memory=2g`). Five processes
+share it: Postgres, Redis, Evolution, the web app and the bridge use about
+350 MiB idle, and the web app's attachment reading comes on top (see
+[Memory for attachments](whatsapp.md#memory-for-attachments)). The 2 GiB figure
+is a recommendation, **not measured under full load**: the web part alone was
+measured, in its own container.
+
+The image is **`linux/amd64` only**: it downloads the amd64 build of s6-overlay,
+pinned by checksum, so it cannot be built for arm64. On an arm64 host run it
+under emulation, or use [Compose](#docker-compose) with a web image you build
+on that host from `apps/web/Dockerfile`.
+
 ### Everything lives in `/data`
 
 | Path | Holds |
@@ -153,6 +167,13 @@ screen when it is created.
 | `redis` | `redis:8.2.9-alpine` | `whatsapp` | no |
 | `evolution` | `evoapicloud/evolution-api:v2.3.7` | `whatsapp` | no |
 | `telegram-bridge` | `ghcr.io/ju-li/automata-mcp-telegram-bridge:1` | `telegram` | no |
+
+Give the `web` service **at least 1 GiB** of memory (`mem_limit: 1g`, or your
+platform's limit): reading attachments is the one thing that makes its memory
+depend on what a chat contains. The figures behind that are in
+[Memory for attachments](whatsapp.md#memory-for-attachments). The web image is
+published for `linux/amd64` and also builds and runs on arm64 when built on an
+arm64 host.
 
 Only the web app is published. Everything else, including the webhooks
 Evolution and the bridge send back to the app, travels over the compose

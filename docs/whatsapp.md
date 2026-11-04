@@ -189,7 +189,38 @@ Things to know:
   proxy's.
 - It needs `sharp` (a native binary, one per platform and libc) and `unpdf`; they are
   ordinary dependencies of the web app, so a build made on the platform it runs on
-  (the published images build and run on Alpine) has them.
+  (the published images build and run on Alpine) has them. Both Dockerfiles check
+  this at build time and **fail the build** if either cannot load, so a missing
+  binary shows up when you build, not on the first call. Proven on linux/arm64 and
+  linux/amd64 for the web image; the all-in-one image is amd64-only (see
+  [Single container](self-hosting.md#memory-and-architecture)).
+
+### Memory for attachments
+
+Everything is held in memory, so what the process needs is set by limits in the
+code, not by what a chat sends: at most two downloads or image jobs at a time per
+process, and **at most one PDF worker** (a second PDF waits up to 20 s, then
+answers "busy"). Each PDF worker is killed at 320 MB of its own memory or after
+10 s, whichever comes first.
+
+Measured in the web image with a 1 GiB limit, with two PDF decompression bombs
+(a few MB that inflate to about 2 GB) arriving together with ordinary reads:
+
+| Limit | Result |
+|---|---|
+| 1 GiB | survived every run; peak 860-940 MiB of anonymous memory with two PDF workers (before the one-PDF limit) |
+| 832 MiB | survived, 2% margin (the smallest that did) |
+| 768 MiB | the whole container was OOM-killed |
+
+With one PDF worker the expected peak is about **500-570 MiB**. That is an
+estimate from the same measurements; it has not been measured again since the
+limit went in. Idle, the web app uses 55-90 MiB, and reading realistic PDFs
+(large, many fonts) stays near 250 MiB.
+
+So: give the web container **1 GiB at least**, and 2 GiB for the all-in-one image
+(not measured under full load). A cache hit takes a processing slot like a
+download does, so `NUXT_WHATSAPP_MEDIA_CACHE_BYTES` (50 MB by default) raises the
+floor but not the number of workers.
 
 ## Importing existing history
 

@@ -13,6 +13,11 @@ The all-in-one image builds the web app and the bridge from the same commit as
 the other two, on top of Evolution's pinned image, so one version names the same
 code in all three.
 
+The images are published for `linux/amd64` only. The web and bridge images also
+build and run on arm64 when built on an arm64 host (the native `sharp` binary is
+chosen when the image is built, so build on the architecture it will run on); the
+all-in-one image cannot be built for arm64, because it downloads an amd64 s6-overlay.
+
 Each release is tagged `X.Y.Z`, `X.Y`, `X`, `latest` and `sha-<commit>`, for
 `linux/amd64`. **Point a service or a template at the major tag (`:1`), not
 `:latest`.** The web service migrates its schema at boot and migrations only go

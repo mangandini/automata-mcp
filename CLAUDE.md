@@ -97,7 +97,7 @@ apps/web/                    Nuxt 4 app. srcDir = app/. Own Dockerfile (context 
                              useReconnect, useTablePage, useTokenScope, …
   app/middleware/            auth.global.ts — session + organization gate
   modules/mcp-token-route.ts local Nuxt module — registers /mcp/:token
-  server/api/                auth/, org/, invites/, instances/, tokens/, telegram/,
+  server/api/                auth/, org/, invites/, instances/, tokens/, telegram/, media/,
                              webhook/
   server/mcp/index.ts        default MCP handler (auth middleware)
   server/mcp/tools/<group>/   one file per tool, auto-discovered. A group is
@@ -112,7 +112,8 @@ apps/web/                    Nuxt 4 app. srcDir = app/. Own Dockerfile (context 
                              pg-run, pg-catalog, chats, alerts, mailer,
                              mcp-kind-tool, telegram, telegram-db,
                              telegram-instances, imap-client, imap-sync, imap-db,
-                             mail-format, mfa, totp, webauthn, …
+                             mail-format, mfa, totp, webauthn,
+                             message-payload, media-* (WhatsApp attachments), …
   shared/connection.ts       InstanceKind, assertNever — imported as #shared
 apps/telegram-bridge/        Telegram MTProto service (teleproto). Own Dockerfile,
                              `telegram` schema of the shared Postgres. See "Telegram bridge".
@@ -149,7 +150,7 @@ Three things enforce it:
 
 ### A third path: the public download link
 
-`/api/media/<token>` (`get-message-media`, see `server/utils/media-links.ts` and `media-serve.ts`) is the only route a browser with **no session** reaches, so it is a third credential path beside the two above and shares nothing with them. The token in the path is its own credential (`wamedia_` + 32 random bytes, only the SHA-256 stored in `app.media_links`), and it carries no authority: the row names the MCP token that made it, and every GET, HEAD and POST re-asks `authorizeMediaLink` whether that token could make the same request now (live, holder still reaches the connection, tool still granted, chat still in scope). Revoking the token, unassigning, removing or demoting the member, deleting the connection, unticking the tool or narrowing the chat scope kills its links; rotating the secret does not.
+`/api/media/<token>` (`get-message-media`, see `server/utils/media-links.ts` and `media-serve.ts`) is the only route a browser with **no session** reaches, so it is a third credential path beside the two above and shares nothing with them. The token in the path is its own credential (`wamedia_` + 32 random bytes, only the SHA-256 stored in `app.media_links`), and it carries no authority: the row names the MCP token that made it, and every GET, HEAD and POST re-asks `authorizeMediaLink` whether that token could make the same request now (live, holder still reaches the connection, tool still granted, chat still in scope). Revoking the token, unassigning the member, removing them, deleting the connection, unticking the tool or narrowing the chat scope kills its links; so does demoting an admin, but only one with no assignment on that connection (a demoted admin who is also assigned still reaches it, `authorizesInstance`, so their links keep working); rotating the secret does not.
 
 Rules easy to undo:
 
@@ -160,6 +161,15 @@ Rules easy to undo:
 - **The token never reaches a log.** `redactPath` maps `/api/media/<anything>` to `/api/media/[redacted]` and `server/plugins/redact-mcp.ts` applies it to both path families; the route logs the link id only, never the token or the token facts (they carry `token_hash`). (`nuxt dev` alone writes a `Malformed URI sequence in request URL` warning with the raw path for an invalid percent escape; the production build does not.)
 - **Public pages never say what state the account is in** (`mediaFailureMessage` is called without `accountState`), and every refusal of the link itself is the same `invalid` page. A database that cannot be read is a 503 notice with a log line naming the step, never `invalid`.
 - The name in the page and in `Content-Disposition` goes through `safeDownloadName` again at serve time, and the content type through `servedContentType`, whatever the row holds.
+
+**Memory bounds on attachment processing.** Everything is in memory (no disk, no DB), so the process's peak is a sum fixed by design, not by what a chat sends:
+
+- **One PDF worker per process** (`withPdfSlot`, 1 permit, taken before the shared slot so a queued PDF never holds one) beside **two** slots for downloads and image work. Two PDF decompression bombs at once peaked at 860-940 MiB of anonymous memory in a 1 GiB container (smallest surviving limit 832 MiB, 768 MiB OOM-killed the whole server, requests in flight with it); a limit of one worker is what that measurement bought. Expected peak with one worker is about 500-570 MiB, **an estimate, not re-measured**.
+- **Per-worker memory cap of 320 MB** (`external_memory + used_heap_size`, sampled every 50 ms) **plus** `resourceLimits` (256 MB old generation). `resourceLimits` alone does not cover `ArrayBuffer`s, where a decompressed stream lives, so the cap is the one that stops a bomb; the heap limit is the second line. Per worker, not per process, so one file cannot kill a PDF being read beside it.
+- **10 s deadline** (`PDF_LIMITS.maxMs`) for opening and reading together, 50 pages: a runaway decode reaches 128 MB in about 0.3 s, so the deadline bounds CPU and how long the permit is held, not memory. `finish` waits for the terminated worker to exit before releasing the slot, so a worker that is still dying never overlaps the next one.
+- Plan **1 GiB minimum** for the web container, **2 GiB** for the all-in-one image (five processes; idle 350 MiB; **not measured under full load**). Cache hits take a processing slot too, so a warm cache does not lift these limits. Do not raise the PDF permit, the cap or the cache default without re-measuring with `bomb.pdf`-style files (a few MB of Flate that inflates to ~2 GB).
+
+**Native dependencies in the images.** `sharp` (a musl binary per architecture, chosen by pnpm at install time) and `unpdf` (resolved from `.output/server/node_modules`, which is what `media-pdf.ts` looks up). Both Dockerfiles run an assertion after the `.output` copy and **fail the build** if either cannot load, so a missing binary is a build error, not the first request. Proven on linux/arm64 (web) and linux/amd64 (web and all-in-one); build each image on the architecture it will run on. The all-in-one image is **amd64-only**, for a reason older than this: its pinned s6-overlay download is x86_64. Published images are amd64.
 
 ## Who may sign up
 

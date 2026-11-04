@@ -138,6 +138,23 @@ Líneas aprox. entre paréntesis. Símbolos principales exportados.
 | `telegram-instances.ts` | `provisionTelegramInstance`, `registerTelegramWebhook`, `deleteTelegramSession` |
 | `telegram-db.ts` (604) | lectura read-only del schema `telegram`: `listTelegramChats`, `listTelegramMessagesPage`, `searchTelegramMessages` |
 
+### Adjuntos de WhatsApp (`get-message-media`, opt-in)
+Memoria, no disco ni BD: ver CLAUDE.md › "A third path: the public download link" (reglas y límites de memoria).
+| Archivo | Rol |
+|---|---|
+| `message-payload.ts` (334) | puro: `unwrapPayload`, `classifyMedia` (imagen/PDF/otro/rechazado), `detectImageMime`, `looksLikePdf`, `storedBytes` |
+| `media-safety.ts` (266) | cabeceras y HTML del enlace público: `servedContentType` (allowlist), `safeDownloadName`, `mediaFileHeaders`, `renderDownloadPage`, `renderNoticePage`, `publicLinkUrl` |
+| `media-errors.ts` | `MediaError`, `classifyEvolutionFailure`, `mediaFailureMessage` (texto por tipo de fallo; la página pública nunca dice el estado de la cuenta) |
+| `media-budget.ts` (228) | constantes y planificación: `RESPONSE_BUDGET_CHARS`, `PDF_LIMITS`, `IMAGE_LADDER`, `linkCapFrom`, `cacheBytesFrom`, `planImageAttempts`, `describePdfCoverage` |
+| `media-memory.ts` (273) | estructuras en memoria por proceso: `createMediaCache` (TTL absoluto, LRU, solo originales verificados), `createSemaphore`, `createCooldown`, `createInflight`, `createRateLimiter` |
+| `media-body.ts` | lectura de la respuesta de Evolution con tope de bytes: `readBodyCapped`, `parseEvolutionMediaBody`, `sha256Matches` |
+| `media-download.ts` (282) | **única** función que descarga de Evolution: `downloadVerifiedMedia` (tope, sha256, caché, cooldown, 2 slots), `withMediaSlot`, `withPdfSlot` (1 permiso), `evictMediaForInstance` (la llama `deleteInstance`) |
+| `media-image.ts` | `prepareImageForModel`: `sharp`, escalera de reducción hasta el presupuesto de respuesta |
+| `media-pdf.ts` (277) | `extractPdfForModel`: `unpdf` en worker con tope de memoria (320 MB), `resourceLimits` y plazo de 10 s |
+| `media-links.ts` (233) | enlaces `app.media_links`: `createMediaLink`, `findMediaLinkByToken`, `claimMediaDownload`/`refundMediaDownload`, `authorizeMediaLink` (re-autoriza cada uso) |
+| `media-read.ts` (319) | orquesta el tool: `getMessageMedia` (mensaje → clasificar → descargar → procesar → enlace) |
+| `media-serve.ts` (243) | lado público del enlace: `serveMediaPage` (GET/HEAD, no descarga), `serveMediaFile` (POST), `refuseMediaMethod`, `mediaNotFound` |
+
 ### IMAP
 | Archivo | Rol |
 |---|---|
@@ -152,12 +169,13 @@ Nombre del tool = basename del archivo (único globalmente). Gate por kind + sco
 
 | Grupo | Tools | kinds |
 |---|---|---|
-| `whatsapp/` | get-connection-status, list-chats, list-contacts, read-messages, search-messages, send-text-message (write) | whatsapp |
+| `whatsapp/` | get-connection-status, list-chats, list-contacts, read-messages, search-messages, send-text-message (write), **get-message-media (opt-in)** | whatsapp |
 | `telegram/` | get-telegram-status, list-telegram-chats, read-telegram-messages, search-telegram-messages, send-telegram-message (write) | telegram |
 | `sql/` | get-database-info, list-tables, describe-table, run-query, run-statement (write) | postgres (todos los SQL) |
 | `imap/` | get-mailbox-status, list-mail-folders, list-emails, search-emails, read-email, get-email-attachment | imap |
 
 Plantillas para copiar: `whatsapp/get-connection-status.ts` (lectura), `sql/run-statement.ts` (escritura).
+Tools opt-in (`shared/tool-optin.ts`): "todas las acciones" no los incluye; solo se conceden si su nombre está en `tool_names`. `get-message-media.ts` es el único.
 Instrucciones por kind se inyectan en `server/plugins/mcp-instructions.ts` (hook `mcp:config:resolved`).
 
 ## 6. API REST (`server/api/`)
@@ -170,6 +188,7 @@ Convención Nitro: `ruta/[param]/nombre.<metodo>.ts`.
 - `instances/` — `index.get/post` (listar/crear), y por `[id]`: `index.get/delete`, `label.patch`, `summary.get`, `qr.get`, `reconnect.post`, `logout.post`, `resync.post`, `chats/` (+`resolve.post`), `contacts.get`, `messages.get`, `tables.get`, `dsn.patch`, `evolution-db.patch`, `telegram-db.patch`, `imap/` (get/patch/sync), `telegram/` (pair, qr, password, logout, reconnect), `assignments/`, `tokens.get/post`, `mcp-tools.get` (picker de scope; usa `kindsForTool`, no `group`).
 - `tokens/[id]` — patch (scope), delete (revocar), `rotate.post`.
 - `telegram/readiness.get` — estado del bridge del despliegue.
+- `media/[token].get|head|post.ts` (+ `[token].ts` → 405, `[...path].ts` → 404) — enlace público de descarga de adjuntos; **tercera vía de credencial**, sin sesión ni `mcpAuth` (`media-serve.ts`).
 - `webhook/evolution.post`, `webhook/telegram.post` — eventos de conexión (alertas).
 
 Toda ruta de instancia debe pasar por `requireReadableInstance*` o `requireManagedInstance*` (`org.ts`) — no hay RLS debajo.
@@ -185,7 +204,7 @@ Toda ruta de instancia debe pasar por `requireReadableInstance*` o `requireManag
 ## 8. Base de datos
 
 Schema `app` (`server/db/migrations.ts`, append-only — nunca editar migraciones existentes, añadir al final de `APP_MIGRATIONS`):
-`users, sessions, organizations, memberships, instances, instance_assignments, invitations, mcp_tokens, totp_credentials, webauthn_credentials, recovery_codes, mfa_challenges, email_verifications, mail_sync_state, mail_folders, mail_messages`.
+`users, sessions, organizations, memberships, instances, instance_assignments, invitations, mcp_tokens, totp_credentials, webauthn_credentials, recovery_codes, mfa_challenges, email_verifications, mail_sync_state, mail_folders, mail_messages, media_links` (`media_links` = migración `0005_media_links`: solo hash del token y referencias, sin bytes).
 
 Schema `telegram` (bridge, `apps/telegram-bridge/src/migrations/*.sql`): `sessions, chats, users, messages`.
 Schema `public`: tablas de Evolution (`Message`, `Chat`, `Contact`…) — solo lectura.
@@ -239,6 +258,7 @@ Secretos en `instances` (`api_key, admin_key, dsn, evolution_db_url, telegram_db
 | **Roles / miembros / invitaciones** | `org.ts`, `invites.ts`, `api/org/*`, `api/invites/*`, `team.vue`. |
 | **Alertas de desconexión** | `alerts.ts`, `tasks/alerts/*`, `api/webhook/*`, `instances.ts › registerConnectionWebhook`. |
 | **IMAP** | `imap-client.ts`, `imap-sync.ts`, `imap-db.ts`, `mail-format.ts`, `tools/imap/*`, `InstanceImap.vue`. |
+| **Cambiar adjuntos de WhatsApp** | Descarga/caps/caché/cooldown: solo `media-download.ts` (no hay otro sitio que llame a Evolution por media). Qué se lee y cómo se recorta: `message-payload.ts` (clasificación), `media-image.ts`, `media-pdf.ts`, `media-budget.ts` (constantes). Enlaces: `media-links.ts` (autorización) y `media-serve.ts`/`media-safety.ts` + `api/media/*` (público). Tool: `whatsapp/get-message-media.ts` (opt-in en `shared/tool-optin.ts`). Tocar PDF, caché o slots = re-medir memoria (CLAUDE.md › "A third path…", párrafo "Memory bounds"). Cualquier ruta bajo `/api/media/` necesita handler propio; `redactPath` ya cubre el token. |
 | **Telegram** | web: `telegram*.ts`, `tools/telegram/*`, `InstanceTelegram.vue`; bridge: `apps/telegram-bridge/src/*`. |
 | **Estado/reconexión WhatsApp** | `instances.ts › getInstanceStatus/reconnectInstance`, `useConnectionState`, `useReconnect`, `InstanceWhatsapp.vue`, `SessionLostNotice.vue`. |
 | **Docker / despliegue** | `docker-compose*.yml`, `apps/*/Dockerfile`, `docker/aio/`, `docs/self-hosting.md`, `docs/deploy-railway.md`. |
@@ -259,7 +279,7 @@ Secretos en `instances` (`api_key, admin_key, dsn, evolution_db_url, telegram_db
 
 ## 13. Índice de secciones de CLAUDE.md (para leer solo lo necesario)
 
-The auth split · Who may sign up · Email verification · Two-factor sign-in · MCP wiring ·
+The auth split (incl. "A third path: the public download link": attachments, memory bounds) · Who may sign up · Email verification · Two-factor sign-in · MCP wiring ·
 Credential rules · Postgres connections · History arrives once · Connection state ·
 Mentions · Webhooks · Disconnect alerts · Organizations and roles · Invitations ·
 Assignment/token rotation · Telegram bridge · IMAP connections · The app database ·
