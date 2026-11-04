@@ -148,7 +148,7 @@ Memoria, no disco ni BD. CLAUDE.md › "WhatsApp attachments" (ruta única de de
 | `media-budget.ts` (228) | constantes y planificación: `RESPONSE_BUDGET_CHARS`, `PDF_LIMITS`, `IMAGE_LADDER`, `linkCapFrom`, `cacheBytesFrom`, `planImageAttempts`, `describePdfCoverage` |
 | `media-memory.ts` (273) | estructuras en memoria por proceso: `createMediaCache` (TTL absoluto, LRU, solo originales verificados), `createSemaphore`, `createCooldown`, `createInflight`, `createRateLimiter` |
 | `media-body.ts` | lectura de la respuesta de Evolution con tope de bytes: `readBodyCapped`, `parseEvolutionMediaBody`, `sha256Matches` |
-| `media-download.ts` (282) | **única** función que descarga de Evolution: `downloadVerifiedMedia` (tope, sha256, caché, cooldown, 2 slots), `withMediaSlot`, `withPdfSlot` (1 permiso), `evictMediaForInstance` (la llama `deleteInstance`) |
+| `media-download.ts` (332) | **única** función que descarga de Evolution: `downloadVerifiedMedia` (tope, sha256, caché, cooldown tras timeout/expired/unknown, 2 slots), `withMediaSlot`, `withPdfSlot` (1 permiso), `acquireDeliveryPermit` (4 respuestas del enlace en entrega; orden: entrega → PDF → slot), `evictMediaForInstance` (la llama `deleteInstance`) |
 | `media-image.ts` | `prepareImageForModel`: `sharp`, escalera de reducción hasta el presupuesto de respuesta |
 | `media-pdf.ts` (277) | `extractPdfForModel`: `unpdf` en worker con tope de memoria (320 MB), `resourceLimits` y plazo de 10 s |
 | `media-links.ts` (233) | enlaces `app.media_links`: `createMediaLink`, `findMediaLinkByToken`, `claimMediaDownload`/`refundMediaDownload`, `authorizeMediaLink` (re-autoriza cada uso) |

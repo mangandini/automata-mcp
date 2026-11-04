@@ -179,7 +179,9 @@ screen when it is created.
 
 Give the `web` service **at least 1 GiB** of memory (`mem_limit: 1g`, or your
 platform's limit): reading attachments is the one thing that makes its memory
-depend on what a chat contains. The figures behind that are in
+depend on what a chat contains (two hostile PDFs, an ordinary one and a 25 MB
+link download at once peaked at 528-585 MiB in a 1 GiB container). The figures
+behind that are in
 [Memory for attachments](whatsapp.md#memory-for-attachments). The web image is
 published for `linux/amd64` and also builds and runs on arm64 when built on an
 arm64 host.

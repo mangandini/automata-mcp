@@ -199,9 +199,11 @@ Things to know:
 
 Everything is held in memory, so what the process needs is set by limits in the
 code, not by what a chat sends: at most two downloads or image jobs at a time per
-process, and **at most one PDF worker** (a second PDF waits up to 20 s, then
-answers "busy"). Each PDF worker is killed at 320 MB of its own memory or after
-10 s, whichever comes first.
+process, **at most one PDF worker** (a second PDF waits up to 20 s, then
+answers "busy"), and at most four download-link responses being sent at once
+(each up to the link cap, so 100 MB by default; a fifth waits up to 20 s, then
+gets "busy" and keeps its download). Each PDF worker is killed at 320 MB of its
+own memory or after 10 s, whichever comes first.
 
 Measured in the web image, before the one-PDF-worker limit went in, with two PDF
 decompression bombs (a few MB that inflate to about 2 GB) arriving together with
@@ -214,10 +216,17 @@ ordinary reads. Two scenarios, so read each row against its own:
 | cold cache | 768 MiB | the whole container was OOM-killed |
 | warm cache (50 MB of cached files) | 1 GiB | survived, but peaked at 860-940 MiB of anonymous memory, and on amd64 memory use reached the limit itself |
 
-With one PDF worker the expected peak is about **500-570 MiB**. That is an
-estimate for two hostile PDFs with a cold cache; it has not been measured again
-since the limit went in, and a full media cache (up to 50 MB by default, plus
-overhead) adds on top of it. Measured on arm64: idle, the web app uses
+With one PDF worker, measured again in a 1 GiB container: two PDF bombs, one
+ordinary PDF and one cold 25 MB link download, all at once, cold cache.
+
+| Architecture | Runs | Peak anonymous memory | cgroup peak | Result |
+|---|---|---|---|---|
+| arm64 | 3 | 528-577 MiB | 536-633 MiB | survived every run, no OOM event |
+| amd64 (emulated on an arm64 host) | 1 | 585 MiB | 608 MiB | survived, no OOM event |
+
+Not measured with one worker: a warm media cache (adds up to its size, 50 MB by
+default, plus overhead) and four slow link downloads at once (up to 100 MB).
+Measured on arm64: idle, the web app uses
 55-90 MiB, and reading realistic PDFs (large, many fonts) stays near 250 MiB.
 
 So: give the web container **1 GiB at least**, and 2 GiB for the all-in-one image
