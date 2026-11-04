@@ -52,12 +52,20 @@ export interface PdfWorkerLimits {
    * stores (where a decompressed stream lives) plus the JS heap. Per worker, so
    * it neither depends on what the rest of the process is doing nor lets one
    * file kill a PDF being read at the same time; `Infinity` switches it off.
+   * The default (320 MB) is set from measured peaks of this sum, sampled every
+   * 5 ms: ~39 MB for a 9 MB, 240-page file with 16 embedded fonts and 80 images,
+   * ~64 MB for two sheets of 45 MB of vector operators, and ~113 MB for a 6 MB
+   * file embedding one 15 MB TrueType font unsubset (145 MB for a 23 MB one).
+   * Large embedded fonts are what costs: about 5 bytes held per byte of font.
+   * A runaway decode reaches 128 MB in about 0.3 s, so a higher cap costs a
+   * second, not seconds.
    */
   maxWorkerBytes: number
-  /** Called with each memory sample; lets a check observe the peak of a real file. */
+  /** Check hooks, not for callers: how often to sample (default 50 ms) and a view of each sample, to observe the peak of a real file. */
+  pollMs?: number
   onSample?: (workerBytes: number) => void
 }
-const DEFAULT_LIMITS: PdfWorkerLimits = { maxMs: PDF_LIMITS.maxMs, maxWorkerBytes: 128 * 1024 * 1024 }
+const DEFAULT_LIMITS: PdfWorkerLimits = { maxMs: PDF_LIMITS.maxMs, maxWorkerBytes: 320 * 1024 * 1024 }
 
 /**
  * Reads pages in order and posts each one's text as it goes, so pages read
@@ -88,7 +96,7 @@ const { parentPort, workerData } = require('node:worker_threads')
       let text
       try {
         const content = await page.getTextContent()
-        text = content.items.map(item => ('str' in item ? item.str + (item.hasEOL ? '\\n' : '') : '')).join('').trim().slice(0, maxChars)
+        text = content.items.map(item => ('str' in item ? item.str + (item.hasEOL ? '\\n' : '') : '')).join('').trim().slice(0, maxChars).trimEnd()
       } finally {
         page.cleanup()
       }
@@ -175,7 +183,7 @@ function runInWorker(bytes: Buffer, maxChars: number, limits: PdfWorkerLimits): 
           finish('failed', `memory cap of ${Math.round(limits.maxWorkerBytes / 1048576)} MB exceeded`)
         }
       }, () => {})
-    }, MEMORY_POLL_MS)
+    }, limits.pollMs ?? MEMORY_POLL_MS)
 
     try {
       worker = new Worker(WORKER_SOURCE, {
