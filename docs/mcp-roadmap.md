@@ -17,7 +17,7 @@
 | N2 | `get-group-info` (participantes, admins, descripción) | Nuevo | Media | ⬜ |
 | N3 | `list-unread` (pendientes) | Nuevo | Media | ✅ |
 | M3 | `send-text-message`: enviar a grupos (`jid`) y citar | Mejora | Media | ⬜ |
-| N4 | `get-message-media` (descargar adjuntos) | Nuevo | Baja | 🔧 en rama `feat/e-media` (falta verificar en producción) |
+| N4 | `get-message-media` (descargar adjuntos) | Nuevo | Baja | 🟨 |
 | M4 | Rechazar argumentos desconocidos en **todos** los tools (global) | Mejora | Baja | ⬜ |
 | X1 | Conector único para varios números | — | — | ⛔ |
 
@@ -31,7 +31,7 @@ Cada lote = **un** ciclo Superpowers (brainstorming → … → cierre, ver `CLA
 | **B · Búsqueda** | M2 | `feat/b-search` | Architectural (spec + plan) | Búsqueda completa: acentos, OR, número, paginación, autor por nombre, archivos, contexto. SQL delicado en `evolution-db.ts` (dedupe `DISTINCT ON` + `LIMIT/OFFSET`). |
 | **C · Grupos** | N2 | `feat/c-group-info` | Bounded | Evolution en vivo (socket, `rate-overlimit`/428); riesgo distinto, no comparte archivos. |
 | **D · Envío** | M3 | `feat/d-send-groups` | Bounded + revisión estricta | Única escritura (envía a terceros); prueba real en grupo propio. |
-| **E · Adjuntos** | N4 | `feat/e-media` | Architectural | Requiere decidir opt-in por scope, tope de tamaño y privacidad. |
+| **E · Adjuntos** | N4 | `feat/e-media` | Architectural | Requiere decidir opt-in por scope, tope de tamaño y privacidad. 🟨 implementado en `feat/e-media`, sin desplegar. |
 | **F · Rendimiento del panel** | P1 | `feat/f-dashboard-perf` | Bounded (medir primero) | No es MCP: tablas del dashboard. Separado de A para no mezclar riesgos. |
 
 **Orden:** A → B → C → D → E; F cuando se decida (independiente).
@@ -222,7 +222,7 @@ Los tres fallos silenciosos (acentos, número mal formado, argumentos ignorados)
 - 2026-11-04 — nota del lote B: `resolveChatTarget` (usado por `read-messages`/`search-messages` con un número como `jid`) paga una consulta a `relatedChatJids` por llamada, que recorre las filas de la cuenta (único índice: `instanceId`). Ese coste por página/por llamada pasa al lote F, no al M3.
 - 2026-11-04 — lote D, hallazgo F5 (a resolver en D, no en B): en el camino de envío `assertNumberAllowed` (`mcp-scope.ts`) deja pasar tal cual el 422 de `resolveNumberToJid` cuando Evolution no resuelve el número, pero responde 403 (`assertChatAllowed`) cuando lo resuelve y está fuera del scope. Un token con scope de chats puede así distinguir "número que no resuelve" de "número que existe pero fuera de mi scope" = oráculo para sondear números. Las lecturas ya lo evitan (`resolveChatTarget` responde un único `NOT_ACCESSIBLE` a token acotado). Al tocar el envío en D, unificar el error para tokens acotados.
 
-## N4 · `get-message-media` — Media · 🔧
+## N4 · `get-message-media` — Media · 🟨
 
 **Problema (caso real, 2026-10-22, conexión CL).** Un monto que el usuario necesitaba no estaba escrito en ningún mensaje: estaba en un documento adjunto (`[document] ….xlsx`, mensaje de 2026-05-14) y en capturas `[image]` de transferencias (2026-05-19) de un chat 1:1. Con los tools actuales solo se ve el nombre del archivo y el id; no hay forma de bajarlo por MCP. Los adjuntos son a menudo donde está el dato (cotizaciones, comprobantes, circulares del colegio).
 
@@ -247,6 +247,7 @@ Los tres fallos silenciosos (acentos, número mal formado, argumentos ignorados)
 - 2026-10-22 — evaluado.
 - 2026-10-22 — caso real en CL (adjunto .xlsx + capturas con el monto buscado); prioridad Baja → Media. Orden de lotes sin cambio (E sigue después de D); reconsiderar adelantarlo si aparecen más casos.
 - 2026-11-04 — lote E: implementado en `feat/e-media` (tool `get-message-media`, opt-in, `media-read.ts`, ruta pública `/api/media/<token>`); pendiente la verificación en producción con un adjunto real (criterios con CL).
+- 2026-11-04 — lote E, estado de la verificación. **Verificado en local** (imágenes Docker construidas, no producción): el flujo completo del tool contra un Evolution falso en la imagen web, en linux/arm64 y linux/amd64 con `--memory=1g` (JPEG reducido, PDF con texto y marcas de página, `.xlsx` solo con enlace; enlace GET sin descarga y POST con SHA-256 idéntico, cabeceras `attachment`/`nosniff`/`no-store`); PDF bomba rechazado sin caer el proceso; la imagen AIO (amd64) arranca con el tool listado y el worker de PDF funciona con su propio `.output`; ambos Dockerfiles fallan el build si `sharp` o `unpdf` no cargan. **Memoria** (web, 1 GiB): antes del límite de un worker de PDF, dos PDF bomba + lecturas normales llegaron a 790-830 MiB con caché fría y 860-940 MiB con caché llena; 832 MiB aguantó, 768 MiB mató el contenedor. Con un worker (`withPdfSlot`), tope de 320 MB por worker y plazo de 10 s, el pico esperado es ~500-570 MiB: **estimación, no re-medida**. Recomendado: 1 GiB mínimo para la web, 2 GiB para la AIO (**no medido bajo carga completa**). La AIO es solo amd64 (s6-overlay x86_64 fijado, anterior a este lote). **Pendiente**: (1) producción con un adjunto real de CL (el `.xlsx` y la captura del caso); (2) re-medir el pico con un worker; (3) fijar el límite de memoria en Coolify; (4) revisar el access log de Traefik, que registra el token del enlace (la redacción de la app solo se comprobó leyendo el código); (5) confirmar un único salto de proxy para el limitador por IP; (6) el flujo completo a través de la AIO (su `automata-env` fija Evolution en `127.0.0.1:18080`, no admite uno falso).
 
 ## M4 · Rechazar argumentos desconocidos en todos los tools — Baja · ⬜
 

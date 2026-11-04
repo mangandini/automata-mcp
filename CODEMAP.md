@@ -139,7 +139,7 @@ Líneas aprox. entre paréntesis. Símbolos principales exportados.
 | `telegram-db.ts` (604) | lectura read-only del schema `telegram`: `listTelegramChats`, `listTelegramMessagesPage`, `searchTelegramMessages` |
 
 ### Adjuntos de WhatsApp (`get-message-media`, opt-in)
-Memoria, no disco ni BD: ver CLAUDE.md › "A third path: the public download link" (reglas y límites de memoria).
+Memoria, no disco ni BD. CLAUDE.md › "WhatsApp attachments" (ruta única de descarga, caps, límites de memoria, deps nativas) y "A third path: the public download link" (credencial del enlace).
 | Archivo | Rol |
 |---|---|
 | `message-payload.ts` (334) | puro: `unwrapPayload`, `classifyMedia` (imagen/PDF/otro/rechazado), `detectImageMime`, `looksLikePdf`, `storedBytes` |
@@ -258,7 +258,7 @@ Secretos en `instances` (`api_key, admin_key, dsn, evolution_db_url, telegram_db
 | **Roles / miembros / invitaciones** | `org.ts`, `invites.ts`, `api/org/*`, `api/invites/*`, `team.vue`. |
 | **Alertas de desconexión** | `alerts.ts`, `tasks/alerts/*`, `api/webhook/*`, `instances.ts › registerConnectionWebhook`. |
 | **IMAP** | `imap-client.ts`, `imap-sync.ts`, `imap-db.ts`, `mail-format.ts`, `tools/imap/*`, `InstanceImap.vue`. |
-| **Cambiar adjuntos de WhatsApp** | Descarga/caps/caché/cooldown: solo `media-download.ts` (no hay otro sitio que llame a Evolution por media). Qué se lee y cómo se recorta: `message-payload.ts` (clasificación), `media-image.ts`, `media-pdf.ts`, `media-budget.ts` (constantes). Enlaces: `media-links.ts` (autorización) y `media-serve.ts`/`media-safety.ts` + `api/media/*` (público). Tool: `whatsapp/get-message-media.ts` (opt-in en `shared/tool-optin.ts`). Tocar PDF, caché o slots = re-medir memoria (CLAUDE.md › "A third path…", párrafo "Memory bounds"). Cualquier ruta bajo `/api/media/` necesita handler propio; `redactPath` ya cubre el token. |
+| **Cambiar adjuntos de WhatsApp** | Descarga/caps/caché/cooldown: solo `media-download.ts` (no hay otro sitio que llame a Evolution por media). Qué se lee y cómo se recorta: `message-payload.ts` (clasificación), `media-image.ts`, `media-pdf.ts`, `media-budget.ts` (constantes). Enlaces: `media-links.ts` (autorización) y `media-serve.ts`/`media-safety.ts` + `api/media/*` (público). Tool: `whatsapp/get-message-media.ts` (opt-in en `shared/tool-optin.ts`). Tocar PDF, caché o slots = re-medir memoria (CLAUDE.md › "WhatsApp attachments"). Cualquier ruta bajo `/api/media/` necesita handler propio; `redactPath` ya cubre el token. |
 | **Telegram** | web: `telegram*.ts`, `tools/telegram/*`, `InstanceTelegram.vue`; bridge: `apps/telegram-bridge/src/*`. |
 | **Estado/reconexión WhatsApp** | `instances.ts › getInstanceStatus/reconnectInstance`, `useConnectionState`, `useReconnect`, `InstanceWhatsapp.vue`, `SessionLostNotice.vue`. |
 | **Docker / despliegue** | `docker-compose*.yml`, `apps/*/Dockerfile`, `docker/aio/`, `docs/self-hosting.md`, `docs/deploy-railway.md`. |
@@ -279,8 +279,8 @@ Secretos en `instances` (`api_key, admin_key, dsn, evolution_db_url, telegram_db
 
 ## 13. Índice de secciones de CLAUDE.md (para leer solo lo necesario)
 
-The auth split (incl. "A third path: the public download link": attachments, memory bounds) · Who may sign up · Email verification · Two-factor sign-in · MCP wiring ·
-Credential rules · Postgres connections · History arrives once · Connection state ·
+The auth split (incl. "A third path: the public download link") · Who may sign up · Email verification · Two-factor sign-in · MCP wiring ·
+Credential rules · Postgres connections · WhatsApp attachments · History arrives once · Connection state ·
 Mentions · Webhooks · Disconnect alerts · Organizations and roles · Invitations ·
 Assignment/token rotation · Telegram bridge · IMAP connections · The app database ·
 Frontend · Things that cost money · Releases · Container ports · All-in-one image.

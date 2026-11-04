@@ -48,9 +48,9 @@ App's own data (users, sessions, organizations, connections + credentials, token
 
 `README.md` = public landing page (logo, links, screenshots, features, quick start) — keep short. Operator's manual lives in `docs/`: `self-hosting.md` (root `docker-compose.yml` + `.env.selfhost.example`, published images), `deploy-railway.md`, `development.md` (local setup, networking tables, Linux firewall rule), `whatsapp.md`, `telegram.md`, `postgres.md`, `imap.md`, `alerts.md`, `using-automata.md`, `releases.md`. Read before anything involving Docker or local stack; this file covers code. Two compose files: `docker-compose.dev.yml` = services only for dev; `docker-compose.yml` = full self-host stack, separate project name `automata`. Third self-host path: `docker/aio/` = all-in-one image, everything in one container — see "All-in-one image".
 
-**Status:** product loop works end to end for all four kinds — sign up (creates organization), invite colleagues, create connection, pair by QR (importing number's WhatsApp history as it connects), link Telegram by QR, or paste DSN, per-connection dashboard, assign connections to members, connector token provisioning with per-chat, per-folder or per-table scoping. Twenty-two MCP tools, gated by kind:
+**Status:** product loop works end to end for all four kinds — sign up (creates organization), invite colleagues, create connection, pair by QR (importing number's WhatsApp history as it connects), link Telegram by QR, or paste DSN, per-connection dashboard, assign connections to members, connector token provisioning with per-chat, per-folder or per-table scoping. Twenty-three MCP tools, gated by kind:
 
-- `whatsapp`: `get-connection-status`, `list-chats`, `list-contacts`, `read-messages`, `search-messages`, `send-text-message`
+- `whatsapp`: `get-connection-status`, `list-chats`, `list-contacts`, `read-messages`, `search-messages`, `send-text-message` (write), `get-message-media` (opt-in: never part of "all actions"; see "WhatsApp attachments")
 - `telegram`: `get-telegram-status`, `list-telegram-chats`, `read-telegram-messages`, `search-telegram-messages`, `send-telegram-message`
 - `postgres` (the `sql/` group): `get-database-info`, `list-tables`, `describe-table`, `run-query`, `run-statement` (write)
 - `imap`: `get-mailbox-status`, `list-mail-folders`, `list-emails`, `search-emails`, `read-email`, `get-email-attachment` (all read)
@@ -85,6 +85,8 @@ Nuxt deliberately **not** in compose (HMR); no `predev` hook — bring services 
 One `.env` at repo root serves all. Compose reads by adjacency; Nuxt reads because every `apps/web` script passes `--dotenv ../../.env`. `.env.example` documents every var.
 
 Nuxt overrides `runtimeConfig` only from `NUXT_`-prefixed vars, so some values duplicated under two names (`WEBHOOK_URL` for compose, `NUXT_WEBHOOK_URL` for Nuxt) — **keep pair in sync**. That pair = only dev/prod difference; no environment branch in code.
+
+`NUXT_WHATSAPP_MEDIA_MAX_BYTES` (link cap) and `NUXT_WHATSAPP_MEDIA_CACHE_BYTES` (in-memory cache, `0` = off) tune attachments; download links are built from `NUXT_PUBLIC_APP_URL` only, so without it the tool still reads and says there is no link. See "WhatsApp attachments".
 
 ## Layout
 
@@ -136,6 +138,8 @@ Two surfaces have **entirely separate** credential paths; no shared "get current
 | Backend client | `evolutionClientForInstance(instance)` / `pgFor(instance)` | `useEvolutionClient()` / `pgFor(instance)` |
 | On failure | 401 JSON | 401 **+ `WWW-Authenticate`**, JSON-RPC shaped |
 
+A third, narrower path exists (the public attachment download link, `/api/media/<token>`, no session and no `mcpAuth`); it is described under "A third path" below and shares nothing with either column.
+
 Three things enforce it:
 
 - `server/middleware/session.ts` returns early on any `/mcp*` path, so cookies never parsed there. Without early return, browser signed into app could authenticate MCP tool call with cookie.
@@ -162,14 +166,7 @@ Rules easy to undo:
 - **Public pages never say what state the account is in** (`mediaFailureMessage` is called without `accountState`), and every refusal of the link itself is the same `invalid` page. A database that cannot be read is a 503 notice with a log line naming the step, never `invalid`.
 - The name in the page and in `Content-Disposition` goes through `safeDownloadName` again at serve time, and the content type through `servedContentType`, whatever the row holds.
 
-**Memory bounds on attachment processing.** Everything is in memory (no disk, no DB), so the process's peak is a sum fixed by design, not by what a chat sends:
-
-- **One PDF worker per process** (`withPdfSlot`, 1 permit, taken before the shared slot so a queued PDF never holds one) beside **two** slots for downloads and image work. Two PDF decompression bombs at once peaked at 860-940 MiB of anonymous memory in a 1 GiB container (smallest surviving limit 832 MiB, 768 MiB OOM-killed the whole server, requests in flight with it); a limit of one worker is what that measurement bought. Expected peak with one worker is about 500-570 MiB, **an estimate, not re-measured**.
-- **Per-worker memory cap of 320 MB** (`external_memory + used_heap_size`, sampled every 50 ms) **plus** `resourceLimits` (256 MB old generation). `resourceLimits` alone does not cover `ArrayBuffer`s, where a decompressed stream lives, so the cap is the one that stops a bomb; the heap limit is the second line. Per worker, not per process, so one file cannot kill a PDF being read beside it.
-- **10 s deadline** (`PDF_LIMITS.maxMs`) for opening and reading together, 50 pages: a runaway decode reaches 128 MB in about 0.3 s, so the deadline bounds CPU and how long the permit is held, not memory. `finish` waits for the terminated worker to exit before releasing the slot, so a worker that is still dying never overlaps the next one.
-- Plan **1 GiB minimum** for the web container, **2 GiB** for the all-in-one image (five processes; idle 350 MiB; **not measured under full load**). Cache hits take a processing slot too, so a warm cache does not lift these limits. Do not raise the PDF permit, the cap or the cache default without re-measuring with `bomb.pdf`-style files (a few MB of Flate that inflates to ~2 GB).
-
-**Native dependencies in the images.** `sharp` (a musl binary per architecture, chosen by pnpm at install time) and `unpdf` (resolved from `.output/server/node_modules`, which is what `media-pdf.ts` looks up). Both Dockerfiles run an assertion after the `.output` copy and **fail the build** if either cannot load, so a missing binary is a build error, not the first request. Proven on linux/arm64 (web) and linux/amd64 (web and all-in-one); build each image on the architecture it will run on. The all-in-one image is **amd64-only**, for a reason older than this: its pinned s6-overlay download is x86_64. Published images are amd64.
+Everything else about attachments (single fetch path, caps, memory bounds, native dependencies) is in "WhatsApp attachments" below.
 
 ## Who may sign up
 
@@ -338,6 +335,24 @@ Mechanics now in **`keyed-resource.ts`**, engine-independent: id keying, secret 
 **`enabled` guards can't see tool arguments.** Receive only event, so gate whole tool — incl. by kind — but not "this tool, this chat" or "this tool, this table". Argument-dependent logic belongs in handler: every chat check, whole Postgres plan walk. See table in `mcp-scope.ts`.
 
 **Scope columns `NOT NULL` with defaults; `scopeFields()` in `tokens.ts` still writes all six** — `all_chats`/`chat_jids`, `all_tables`/`table_names`, `all_tools`/`tool_names` — so scope edit never leaves axis stale. List columns `jsonb`, passed as plain arrays: postgres.js serialises param by server-described type, so pre-stringified value stored as JSON *string*, which `scopeFromRecord()` reads as empty list.
+
+## WhatsApp attachments
+
+`get-message-media` (opt-in, whatsapp kind) reads one message's image or PDF for the model and mints a public download link for the original. Opt-in rule: see "Opt-in tools" under "Credential rules" (static list, definition-time assertion). Credential path of the link: "A third path: the public download link" under "The auth split". What is left:
+
+- **One fetch path.** `downloadVerifiedMedia` (`media-download.ts`) is the only code that asks Evolution for media; the tool and the link both go through it, so the caps, checksum, cache, cooldown and gate exist once. It does **not** authorize: callers have already done it. Evolution's re-upload request has no timeout of its own, so the call is bounded at 30 s, and a timeout puts the message on a 2-minute cooldown (the phone's re-upload is still pending in Evolution; asking again only queues behind it). Two slots per process for downloads and image work. Bytes are checked against the message's own `fileSha256`; the cache keeps **verified originals only**, with an **absolute** 10-minute TTL (a read never extends it), is bounded by `NUXT_WHATSAPP_MEDIA_CACHE_BYTES` and is evicted per connection in `deleteInstance`. A cache hit still takes a processing slot.
+- **Caps.** Read cap 10 MB (images and PDFs only; anything else, or larger, is details plus link), link cap 25 MB (`NUXT_WHATSAPP_MEDIA_MAX_BYTES`), both refused from the *declared* size before anything is downloaded and re-enforced on the bytes. Images: 40 000 000 pixels (`MAX_IMAGE_PIXELS`, checked from the header and again by `sharp`'s `limitInputPixels`, since a header can lie) and a reduction ladder until the response fits. PDFs: 50 pages and 10 s. Whole response 120 000 characters, base64 included.
+- **Reviewed residual hole, not closed:** Evolution has no size cap of its own and `fileLength` is written by the sender, so a message that lies about its size makes Evolution load the real file. The cap protects this server's memory, not Evolution's; the gap exists for anyone holding an instance key.
+- **The reverse proxy logs the path, and the token is in it.** Traefik (Coolify) and Railway's proxy write each request path to their own access log; the app redacts only its own. Short-lived (1 h) and useful only to someone who already has the link, but `OPS.md` says to check that log setting before enabling the tool for customers. Behind it, the per-address limiter reads the **last** `X-Forwarded-For` hop, right for one proxy only.
+
+**Memory bounds on attachment processing.** Everything is in memory (no disk, no DB), so the process's peak is a sum fixed by design, not by what a chat sends:
+
+- **One PDF worker per process** (`withPdfSlot`, 1 permit, taken before the shared slot so a queued PDF never holds one) beside **two** slots for downloads and image work. Measured in a 1 GiB container before the one-worker limit, two PDF decompression bombs plus ordinary reads peaked at 790-830 MiB of anonymous memory with a cold cache and 860-940 MiB with a warm media cache (the cached bytes raise the floor by 70-140 MiB). The smallest limit that survived the cold scenario was 832 MiB (813 MiB peak, 2% margin); 768 MiB OOM-killed the whole server, requests in flight with it. One worker is what that measurement bought. Expected peak with one worker is about 500-570 MiB, **an estimate, not re-measured**.
+- **Per-worker memory cap of 320 MB** (`external_memory + used_heap_size`, sampled every 50 ms) **plus** `resourceLimits` (256 MB old generation). `resourceLimits` alone does not cover `ArrayBuffer`s, where a decompressed stream lives, so the cap is the one that stops a bomb; the heap limit is the second line. Per worker, not per process, so one file cannot kill a PDF being read beside it.
+- **10 s deadline** (`PDF_LIMITS.maxMs`) for opening and reading together, 50 pages: a runaway decode reaches 128 MB in about 0.3 s, so the deadline bounds CPU and how long the permit is held, not memory. `finish` waits up to 2 s for the terminated worker to exit before releasing the slot (then releases it anyway), so a worker that is still dying rarely overlaps the next one.
+- Plan **1 GiB minimum** for the web container, **2 GiB** for the all-in-one image (five processes; idle 350 MiB; **not measured under full load**). Cache hits take a processing slot too, so a warm cache does not lift these limits. Do not raise the PDF permit, the cap or the cache default without re-measuring with `bomb.pdf`-style files (a few MB of Flate that inflates to ~2 GB).
+
+**Native dependencies in the images.** `sharp` (a musl binary per architecture, chosen by pnpm at install time) and `unpdf` (resolved from `.output/server/node_modules`, which is what `media-pdf.ts` looks up). Both Dockerfiles run an assertion after the `.output` copy and **fail the build** if either cannot load, so a missing binary is a build error, not the first request. Proven on linux/arm64 (web) and linux/amd64 (web and all-in-one); build each image on the architecture it will run on. The all-in-one image is **amd64-only**, for a reason older than this: its pinned s6-overlay download is x86_64. Published images are amd64.
 
 ## History arrives once, at pairing
 

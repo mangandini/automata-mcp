@@ -203,14 +203,16 @@ process, and **at most one PDF worker** (a second PDF waits up to 20 s, then
 answers "busy"). Each PDF worker is killed at 320 MB of its own memory or after
 10 s, whichever comes first.
 
-Measured in the web image with a 1 GiB limit, with two PDF decompression bombs
-(a few MB that inflate to about 2 GB) arriving together with ordinary reads:
+Measured in the web image, before the one-PDF-worker limit went in, with two PDF
+decompression bombs (a few MB that inflate to about 2 GB) arriving together with
+ordinary reads. Two scenarios, so read each row against its own:
 
-| Limit | Result |
-|---|---|
-| 1 GiB | survived every run; peak 860-940 MiB of anonymous memory with two PDF workers (before the one-PDF limit) |
-| 832 MiB | survived, 2% margin (the smallest that did) |
-| 768 MiB | the whole container was OOM-killed |
+| Scenario | Limit | Result |
+|---|---|---|
+| cold cache | 1 GiB | survived every run; peak 790-830 MiB of anonymous memory |
+| cold cache | 832 MiB | survived with 2% margin (peak 813 MiB); the smallest that did |
+| cold cache | 768 MiB | the whole container was OOM-killed |
+| warm cache (50 MB of cached files) | 1 GiB | survived, but peaked at 860-940 MiB of anonymous memory, and on amd64 memory use reached the limit itself |
 
 With one PDF worker the expected peak is about **500-570 MiB**. That is an
 estimate from the same measurements; it has not been measured again since the
