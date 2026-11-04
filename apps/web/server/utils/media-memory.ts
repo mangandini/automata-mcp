@@ -222,13 +222,13 @@ export function createCooldown<C = undefined>(ms: number, now: Clock = Date.now)
       touch(until, key, { end: at + ms, cause })
       if (until.size > MAX_KEYS) trimKeys(until, entry => entry.end <= at)
     },
-    remainingMs(key: string): number {
+    /** How long `key` still cools down and why, or `undefined` when it does not. */
+    get(key: string): { remainingMs: number, cause: C } | undefined {
       const entry = active(key)
-      return entry === undefined ? 0 : entry.end - now()
+      return entry === undefined ? undefined : { remainingMs: entry.end - now(), cause: entry.cause }
     },
-    /** Why `key` is cooling down, or `undefined` when it is not. */
-    causeOf(key: string): C | undefined {
-      return active(key)?.cause
+    remainingMs(key: string): number {
+      return this.get(key)?.remainingMs ?? 0
     }
   }
 }

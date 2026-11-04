@@ -186,8 +186,8 @@ async function lead(
   cacheKey: string,
   maxBytes: number,
 ): Promise<EvolutionMedia> {
-  const remaining = cooldown.remainingMs(cacheKey)
-  if (remaining > 0) throw failure('cooldown', { retryAfterSec: Math.ceil(remaining / 1000), cooldownCause: cooldown.causeOf(cacheKey) })
+  const cooling = cooldown.get(cacheKey)
+  if (cooling) throw failure('cooldown', { retryAfterSec: Math.ceil(cooling.remainingMs / 1000), cooldownCause: cooling.cause })
 
   // 409 for a connection with no credentials, before it takes a slot.
   const evolution = evolutionClientForInstance(instance)
@@ -221,7 +221,7 @@ async function lead(
         // A 2xx that is not JSON (a proxy's page, say) is nothing we recognise: say what it was.
         // Status and kind only: the body can hold the file name, the caption and the file itself.
         if (error instanceof MediaError && error.kind === 'unknown') {
-          console.error(`[media] Evolution answered ${response.status} with a body that is not JSON (${error.kind}) for connection ${instance.id}`)
+          console.error(`[media] Evolution answered ${response.status} with a body that is not JSON (unknown) for connection ${instance.id}`)
         }
         throw error
       }
