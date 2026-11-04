@@ -99,6 +99,8 @@ export function serveMediaPage(event: H3Event, token: string): Promise<string> {
 }
 
 async function servePage(event: H3Event, token: string): Promise<string> {
+  // First, so even a response that ends in an unhandled error keeps `no-store`.
+  setResponseHeaders(event, MEDIA_BASE_HEADERS)
   const resolved = await resolveLink(event, token)
   if ('answer' in resolved) return resolved.answer
   const { link } = resolved
@@ -132,6 +134,7 @@ export function serveMediaFile(event: H3Event, token: string): Promise<string | 
 }
 
 async function serveFile(event: H3Event, token: string): Promise<string | Buffer> {
+  setResponseHeaders(event, MEDIA_BASE_HEADERS)
   const resolved = await resolveLink(event, token)
   if ('answer' in resolved) return resolved.answer
   const { link } = resolved
