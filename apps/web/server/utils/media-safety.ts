@@ -80,13 +80,15 @@ export function servedContentType(declared: string | undefined): string {
 
 /**
  * Removed from names: C0 and C1 controls (CR/LF among them), Unicode line and
- * paragraph separators, path separators, bidi controls (LRM, RLM, ALM,
- * embeddings and overrides, isolates: they reorder what a person reads, so
- * `photo<RLO>fdp.exe` shows as `photoexe.pdf`), unpaired surrogates (which make
- * `encodeURIComponent` throw) and the characters Windows and the header
- * grammar do not accept.
+ * paragraph separators, path separators, every format character (`\p{Cf}`:
+ * the bidi controls LRM, RLM, ALM, embeddings, overrides and isolates, which
+ * reorder what a person reads, so `photo<RLO>fdp.exe` shows as `photoexe.pdf`;
+ * zero-width spaces and joiners, word joiner, BOM, soft hyphen), unpaired
+ * surrogates (which make `encodeURIComponent` throw) and the characters Windows
+ * and the header grammar do not accept. Written as a property class, never as
+ * literal characters, which are invisible in review and in diffs.
  */
-const UNSAFE_NAME_CHARS = /[\p{Cc}\p{Cs}\p{Zl}\p{Zp}/\\‎‏؜‪-‮⁦-⁩"*:<>?|]/gu
+const UNSAFE_NAME_CHARS = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}/\\"*:<>?|]/gu
 
 const MAX_NAME_LENGTH = 150
 
@@ -126,12 +128,13 @@ export function safeDownloadName(input: { fileName?: string, mimeType?: string }
  * `filename*` with the real name percent-encoded. Callers pass a name from
  * `safeDownloadName`, but this is the one place a name becomes header text, so
  * it does not rely on that: `"` and `\` are neutralised in the quoted
- * fallback (else a name could close the quote and add a parameter) and
- * unpaired surrogates dropped (else `encodeURIComponent` throws).
+ * fallback (else a name could close the quote and add a parameter), so is `%`
+ * (a legacy client that percent-decodes `filename` could turn `%2F..` into a
+ * path), and unpaired surrogates dropped (else `encodeURIComponent` throws).
  */
 export function contentDispositionAttachment(name: string): string {
   const clean = name.replace(/\p{Cs}/gu, '')
-  const ascii = clean.replace(/[^\x20-\x7e]|["\\]/gu, '_')
+  const ascii = clean.replace(/[^\x20-\x7e]|["\\%]/gu, '_')
   // encodeURIComponent leaves `' ( ) *` alone; RFC 5987 attr-char excludes them.
   const encoded = encodeURIComponent(clean).replace(/['()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
   return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`
@@ -152,10 +155,11 @@ const PAGE_CSS = 'body{font-family:system-ui,sans-serif;max-width:32rem;margin:1
 
 /**
  * Pages may apply exactly this stylesheet and post a form to themselves:
- * nothing else loads, runs or navigates. Derived from `PAGE_CSS` at module
+ * nothing else loads, runs or navigates, and no other site may frame them (a
+ * framed Download button is one click away from a disguised download). Derived from `PAGE_CSS` at module
  * load so the two cannot drift.
  */
-export const PAGE_CSP = `default-src 'none'; style-src 'sha256-${createHash('sha256').update(PAGE_CSS).digest('base64')}'; form-action 'self'`
+export const PAGE_CSP = `default-src 'none'; style-src 'sha256-${createHash('sha256').update(PAGE_CSS).digest('base64')}'; form-action 'self'; frame-ancestors 'none'`
 
 /** On every response of the route, page or file. */
 export const MEDIA_BASE_HEADERS: Readonly<Record<string, string>> = {
@@ -197,13 +201,13 @@ function layout(title: string, body: string): string {
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${escapeHtml(title)}</title><style>${PAGE_CSS}</style></head><body>${body}</body></html>`
 }
 
-/** Bidi controls, as in `UNSAFE_NAME_CHARS`; the page strips them on its own. */
-const BIDI_CONTROLS = /[\u200E\u200F\u061C\u202A-\u202E\u2066-\u2069]/g
+/** Format characters (bidi controls among them), as in `UNSAFE_NAME_CHARS`; the page strips them on its own. */
+const FORMAT_CHARS = /\p{Cf}/gu
 
 /**
  * What opening the link shows. `fileName` should be the `safeDownloadName`
- * result (the page shows what the download will be called); bidi controls are
- * stripped here as well, so even a raw name cannot reorder what is read.
+ * result (the page shows what the download will be called); format characters
+ * are stripped here as well, so even a raw name cannot reorder what is read.
  * Opening is not downloading: link previews and
  * mail scanners fetch with GET but do not submit forms, so only the button
  * (a POST to this same URL, hence no `action`) reaches WhatsApp.
@@ -213,7 +217,7 @@ export function renderDownloadPage(args: { fileName: string, expiresAt: Date }):
   const expiry = Number.isNaN(time)
     ? ''
     : `<p class="muted">This link expires on ${escapeHtml(args.expiresAt.toISOString().slice(0, 16).replace('T', ' '))} UTC.</p>`
-  return layout('Download file', `<h1>Your file is ready</h1><p class="name">${escapeHtml(args.fileName.replace(BIDI_CONTROLS, ''))}</p>${expiry}<form method="post"><button type="submit">Download</button></form>`)
+  return layout('Download file', `<h1>Your file is ready</h1><p class="name">${escapeHtml(args.fileName.replace(FORMAT_CHARS, ''))}</p>${expiry}<form method="post"><button type="submit">Download</button></form>`)
 }
 
 export type NoticeKind = 'invalid' | 'limit' | 'busy' | 'unavailable' | 'rate' | 'too-large' | 'error'
