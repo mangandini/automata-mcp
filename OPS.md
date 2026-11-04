@@ -95,6 +95,16 @@ Puertos internos del contenedor: web 3000, Postgres 127.0.0.1:5432, Redis 6379, 
   bash -c '. /usr/local/bin/automata-env; psql "$AUTOMATA_DATABASE_URL" -c "REINDEX DATABASE $POSTGRES_DB" && pg_dump "$AUTOMATA_DATABASE_URL" > /data/check.sql && echo DUMP_OK && rm /data/check.sql'
   ```
 
+## Enlaces de descarga de adjuntos (`get-message-media`)
+
+El tool opt-in `get-message-media` crea enlaces `{NUXT_PUBLIC_APP_URL}/api/media/<token>` (válidos 1 h, 20 descargas). Qué mirar al operarlo:
+
+- **`NUXT_PUBLIC_APP_URL` debe estar puesta** (en producción ya lo está). Los enlaces se construyen solo con ella, nunca con el `Host` de la petición. Sin ella el tool sigue leyendo adjuntos pero no da enlace, y el arranque lo avisa una vez (`[startup] NUXT_PUBLIC_APP_URL is not set…`).
+- **El token del enlace aparece en logs fuera de la app.** La app lo redacta en los suyos, pero el proxy de delante (Traefik de Coolify, o el de Railway) registra el *path* de cada petición en su propio log de acceso, y el token va en el path. Lo acota la vida del enlace (1 h) y que solo sirve a quien ya tiene el enlace; aun así, **revisar el ajuste de access log de Traefik en Coolify** (y quién lee esos logs) antes de activar el tool para clientes.
+- **Un solo salto de proxy.** El throttle por IP de la ruta usa `clientIp`, que toma la **última** entrada de `X-Forwarded-For`. Con un único proxy delante (Traefik) es la IP real; con dos saltos sería la del primero y todo el mundo compartiría cubo. Confirmar que en Coolify solo hay uno.
+- Memoria: las descargas verificadas se guardan en memoria del proceso 10 min (`NUXT_WHATSAPP_MEDIA_CACHE_BYTES`, 50 MB por defecto, `0` la apaga). Un reinicio la vacía; no toca disco ni BD.
+- Los enlaces viven en `app.media_links` (sin bytes). Borrar una conexión borra sus enlaces; revocar el token, desasignar a su dueño o sacar el chat del scope los inutiliza al instante (se autoriza en cada uso). **Rotar el secreto del token no** mata los enlaces ya emitidos: valen hasta que vencen.
+
 ## Errores de logs que son normales
 
 - `stream errored out` con código **515** justo tras escanear: WhatsApp pide reiniciar el socket; Baileys reconecta solo.

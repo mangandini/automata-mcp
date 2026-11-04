@@ -356,4 +356,35 @@ export const APP_MIGRATIONS: AppMigration[] = [
       CREATE INDEX mail_messages_subject_idx ON app.mail_messages USING gin (subject_tsv);
     `,
   },
+  {
+    name: '0005_media_links',
+    sql: /* sql */ `
+      -- A download link for one WhatsApp attachment (get-message-media). The
+      -- row holds no bytes: the file is fetched from WhatsApp when the link is
+      -- opened, so nothing a chat sent is stored at rest by this table. Only
+      -- the SHA-256 of the link's secret is kept, like an MCP token.
+      --
+      -- Both foreign keys cascade, for different reasons. instances: so
+      -- deleteInstance() never fails on a link nobody can still use. mcp_tokens:
+      -- tokens are revoked rather than deleted, so this only fires when the
+      -- holder's account is deleted (which cascades through their tokens) and
+      -- then the link must go with them. A revoked or demoted token's links die
+      -- through authorizeMediaLink(), which reads the token live, not here.
+      CREATE TABLE app.media_links (
+        id          text PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        token_hash  text NOT NULL CHECK (length(token_hash) = 64),
+        instance    text NOT NULL REFERENCES app.instances (id) ON DELETE CASCADE,
+        token_id    text NOT NULL REFERENCES app.mcp_tokens (id) ON DELETE CASCADE,
+        message_id  text NOT NULL,
+        remote_jid  text NOT NULL,
+        file_name   text NOT NULL,
+        mime_type   text NOT NULL,
+        expires_at  timestamptz NOT NULL,
+        downloads   integer NOT NULL DEFAULT 0 CHECK (downloads >= 0),
+        created     timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE UNIQUE INDEX media_links_token_hash_key ON app.media_links (token_hash);
+      CREATE INDEX media_links_expires_idx ON app.media_links (expires_at);
+    `,
+  },
 ]

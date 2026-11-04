@@ -365,3 +365,22 @@ export interface AppMcpToken {
   all_tools: boolean
   tool_names: unknown
 }
+
+/**
+ * A download link for one attachment. Holds where the file is, never what it
+ * is: no bytes, and only the hash of the link's secret.
+ */
+export interface AppMediaLink {
+  id: string
+  token_hash: string
+  instance: string
+  /** The MCP token that created the link; its scope and liveness decide whether the link still works. */
+  token_id: string
+  message_id: string
+  remote_jid: string
+  file_name: string
+  mime_type: string
+  expires_at: string
+  downloads: number
+  created?: string
+}
