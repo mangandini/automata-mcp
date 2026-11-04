@@ -33,7 +33,11 @@ import { classifyMedia, detectImageMime, looksLikePdf } from './message-payload.
  * download's own); anything that goes wrong after the file is in hand (an image
  * too large to decode, a scanned PDF, no public URL for links, a failed link
  * insert) degrades to "what we have, and why not the rest" instead of throwing
- * the file away.
+ * the file away. The one exception is `busy` from the processing slot: a 503
+ * to retry (the download is cached, so the retry is cheap).
+ *
+ * Notes that send the reader to the download link are resolved last (`Note`),
+ * once it is known whether the response has one.
  */
 
 type TextBlock = { type: 'text', text: string }
@@ -54,6 +58,16 @@ function megabytes(bytes: number): string {
   return `${Math.round(bytes / 1024 / 1024 * 10) / 10} MB`
 }
 
+/**
+ * A note is a sentence, or a function of whether the response ends up with a
+ * download link. The link is only made at the end (step 5, and it can fail), so
+ * a sentence that sends the reader to it is written as both versions and
+ * resolved once the outcome is known: a response never points at a link that
+ * is not in it.
+ */
+type Note = string | ((hasLink: boolean) => string)
+const linked = (withLink: string, without: string): Note => hasLink => hasLink ? withLink : without
+
 /** A processing refusal, as the sentence for `note`. */
 const IMAGE_REFUSALS = {
   'pixel-cap': 'The picture has too many pixels to decode safely, so it was not shown.',
@@ -62,9 +76,11 @@ const IMAGE_REFUSALS = {
 } as const
 
 const PDF_REFUSALS = {
-  'no-text': 'This PDF has no text that can be extracted (it is probably a scan), so only the download link is given.',
+  'no-text': linked(
+    'This PDF has no text that can be extracted (it is probably a scan), so only the download link is given.',
+    'This PDF has no text that can be extracted (it is probably a scan).'),
   'encrypted': 'This PDF is password-protected, so its text could not be read.',
-  'unreadable': 'This PDF could not be read, so only the download link is given.',
+  'unreadable': linked('This PDF could not be read, so only the download link is given.', 'This PDF could not be read.'),
 } as const
 
 // A `fileSha256` that is there but that `storedBytes` cannot turn into 32 bytes
@@ -129,7 +145,7 @@ export async function getMessageMedia(args: {
     })
   }
 
-  const notes: string[] = []
+  const notes: Note[] = []
   let kind: 'image' | 'pdf' | 'document' = media.route
   let bytes: Buffer | undefined
   let downloadedMime: string | undefined
@@ -137,10 +153,13 @@ export async function getMessageMedia(args: {
   // Only images and PDFs are ever read by the tool, and only within the read
   // cap; everything else (other documents, anything over the cap) is a link.
   if (kind === 'document') {
-    notes.push('This is a document the connector does not read; it is available through the download link only.')
+    notes.push(linked(
+      'This is a document the connector does not read; it is available through the download link only.',
+      'This is a document the connector does not read.'))
   }
   else if (media.declaredSize !== undefined && media.declaredSize > readCap) {
-    notes.push(`The file is declared as ${megabytes(media.declaredSize)}, above the ${megabytes(readCap)} the connector reads, so it was not downloaded; it is available through the download link only.`)
+    const declared = `The file is declared as ${megabytes(media.declaredSize)}, above the ${megabytes(readCap)} the connector reads, so it was not downloaded`
+    notes.push(linked(`${declared}; it is available through the download link only.`, `${declared}.`))
   }
   else {
     try {
@@ -154,7 +173,8 @@ export async function getMessageMedia(args: {
     }
     catch (error) {
       if (error instanceof MediaError && error.kind === 'too-large') {
-        notes.push(`The file is larger than the ${megabytes(readCap)} the connector reads, so only the download link is given.`)
+        const larger = `The file is larger than the ${megabytes(readCap)} the connector reads`
+        notes.push(linked(`${larger}, so only the download link is given.`, `${larger}, so it was not read.`))
       }
       else {
         throw await mediaFailureError(instance, error)
@@ -180,7 +200,8 @@ export async function getMessageMedia(args: {
       if (!detected) {
         // A document declared as an image (an SVG, HEIC, or anything else): a plain file from here on.
         kind = 'document'
-        notes.push('It was declared as an image, but its content is not a JPEG, PNG, WebP or GIF picture, so it was not shown; it is available through the download link.')
+        const notPicture = 'It was declared as an image, but its content is not a JPEG, PNG, WebP or GIF picture, so it was not shown'
+        notes.push(linked(`${notPicture}; it is available through the download link.`, `${notPicture}.`))
       }
       else {
         linkMime = detected
@@ -189,7 +210,8 @@ export async function getMessageMedia(args: {
           block = { type: 'image', data: prepared.bytes.toString('base64'), mimeType: prepared.mimeType }
           processing = { imageStep: prepared.step, width: prepared.width, height: prepared.height, bytes: prepared.bytes.length }
           if (prepared.step > 0) {
-            notes.push(`The picture is shown reduced to ${prepared.width}x${prepared.height} (the original is ${prepared.originalWidth}x${prepared.originalHeight}); the download link has the original.`)
+            const reduced = `The picture is shown reduced to ${prepared.width}x${prepared.height} (the original is ${prepared.originalWidth}x${prepared.originalHeight})`
+            notes.push(linked(`${reduced}; the download link has the original.`, `${reduced}.`))
           }
         }
         else {
@@ -200,7 +222,8 @@ export async function getMessageMedia(args: {
     else if (kind === 'pdf') {
       if (!looksLikePdf(file)) {
         kind = 'document'
-        notes.push('It was declared as a PDF, but its content is not one, so its text was not read; it is available through the download link.')
+        const notPdf = 'It was declared as a PDF, but its content is not one, so its text was not read'
+        notes.push(linked(`${notPdf}; it is available through the download link.`, `${notPdf}.`))
       }
       else {
         linkMime = 'application/pdf'
@@ -208,7 +231,7 @@ export async function getMessageMedia(args: {
         if (extracted?.ok) {
           block = { type: 'text', text: extracted.text }
           processing = { pagesExtracted: extracted.pagesExtracted, pageCount: extracted.pageCount, ...(extracted.stoppedBy && { stoppedBy: extracted.stoppedBy }) }
-          notes.push(describePdfCoverage(extracted))
+          notes.push(hasLink => describePdfCoverage(extracted, hasLink))
         }
         else {
           notes.push(PDF_REFUSALS[extracted?.reason ?? 'unreadable'])
@@ -239,9 +262,11 @@ export async function getMessageMedia(args: {
     }
   }
 
-  // 6. The answer, inside the response budget.
+  // 6. The answer, inside the response budget. Notes are resolved now that it
+  // is known whether there is a link.
+  const sentences = (extra: Note[] = []) => [...notes, ...extra].map(n => typeof n === 'string' ? n : n(download !== undefined))
   const size = bytes?.length ?? media.declaredSize
-  const metadata = (note: string[]) => ({
+  const metadata = (note: string[], withProcessing = true) => ({
     messageId,
     jid,
     type: kind,
@@ -250,25 +275,29 @@ export async function getMessageMedia(args: {
     ...(size !== undefined && { size }),
     ...(download && { download }),
     ...(note.length && { note: note.join(' ') }),
-    ...(processing && { processing }),
+    ...(withProcessing && processing && { processing }),
   })
-  const render = (note: string[]): TextBlock => ({ type: 'text', text: JSON.stringify(metadata(note), null, 2) })
-  const head = render(notes)
+  const render = (note: string[], withProcessing = true): TextBlock => ({ type: 'text', text: JSON.stringify(metadata(note, withProcessing), null, 2) })
+  const head = render(sentences())
   if (!block) return { content: [head] }
 
   const content: MediaToolContent['content'] = [head, block]
   if (contentChars(content) <= RESPONSE_BUDGET_CHARS) return { content }
 
   // The pieces are each sized under the budget with a reserve for this block,
-  // so reaching here means the reserve was wrong. Give up the content, not the link.
+  // so reaching here means the reserve was wrong. Give up the content, not the link;
+  // `processing` described a block that is no longer there, so it goes too.
   console.error(`[media] BUG: a ${kind} response was ${contentChars(content)} characters, over the ${RESPONSE_BUDGET_CHARS} budget; sending the link only`)
-  return { content: [render([...notes, 'The content did not fit in a response, so only the download link is given.'])] }
+  const dropped = linked('The content did not fit in a response, so only the download link is given.', 'The content did not fit in a response, so it is not included.')
+  return { content: [render(sentences([dropped]), false)] }
 }
 
 /** A failed download or a busy slot as the tool's error, with the live account state where it helps. */
 async function mediaFailureError(instance: AppInstance, error: unknown) {
   const failure = await describeMediaFailure(instance, error)
-  return createError({ statusCode: failure.status, message: failure.message })
+  // `busy` and `cooldown` know how long to wait; without it the model can only guess.
+  const wait = error instanceof MediaError && error.retryAfterSec ? ` Try again in about ${error.retryAfterSec} s.` : ''
+  return createError({ statusCode: failure.status, message: failure.message + wait })
 }
 
 /**
