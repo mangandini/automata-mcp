@@ -112,7 +112,7 @@ export function defineKindTool<
 
   if ((optIn ?? false) !== isOptInTool(rest.name)) {
     throw new Error(
-      `Tool "${rest.name}" is ${optIn ? '' : 'not '}flagged optIn but ${isOptInTool(rest.name) ? 'is' : 'is not'} listed in OPT_IN_TOOLS (shared/tool-optin.ts); the two must agree.`,
+      `Tool "${rest.name}": optIn is ${optIn ?? false} but OPT_IN_TOOLS (shared/tool-optin.ts) says ${isOptInTool(rest.name)}; the two must agree.`,
     )
   }
   const kinds: readonly InstanceKind[] = Array.isArray(kind) ? kind : [kind as InstanceKind]

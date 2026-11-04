@@ -1,5 +1,5 @@
 import { assertNever } from '#shared/connection'
-import { keepOptInNames } from '#shared/tool-optin'
+import { isOptInTool } from '#shared/tool-optin'
 
 export interface McpToolInfo {
   name: string
@@ -113,7 +113,7 @@ export function describeScope(scope: TokenScope, kind: InstanceKind): string {
   }
 
   // "All actions" never includes an opt-in tool, so it is named when held.
-  const attachments = scope.all_tools && keepOptInNames(scope.tool_names).length > 0 ? ' + attachments' : ''
+  const attachments = scope.all_tools && scope.tool_names.some(isOptInTool) ? ' + attachments' : ''
   if (scope.all_tools && dataOpen) return `Full access${attachments}`
   return [data, scope.all_tools ? `all actions${attachments}` : plural(scope.tool_names.length, 'action')].join(' · ')
 }
