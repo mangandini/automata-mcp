@@ -13,7 +13,7 @@
 |---|---|---|---|---|
 | M1 | `list-chats`: búsqueda, filtro grupo/directo, paginación | Mejora | Alta | ✅ |
 | N1 | `list-contacts` | Nuevo | Alta | ✅ |
-| M2 | `search-messages`: búsqueda completa (acentos, OR, número, páginas, autor, archivos, contexto) | Mejora | Alta | ⬜ |
+| M2 | `search-messages`: búsqueda completa (acentos, OR, número, páginas, autor, archivos, contexto) | Mejora | Alta | ✅ |
 | N2 | `get-group-info` (participantes, admins, descripción) | Nuevo | Media | ⬜ |
 | N3 | `list-unread` (pendientes) | Nuevo | Media | ✅ |
 | M3 | `send-text-message`: enviar a grupos (`jid`) y citar | Mejora | Media | ⬜ |
@@ -125,7 +125,7 @@ Hallazgos de la prueba real (2026-10-22, ambos tokens contra producción):
 - 2026-10-22 — evaluado.
 - 2026-10-22 — implementado en `feat/a-discovery` (🟨 hasta verificar en producción): `list-contacts { query, page, limit }`.
 
-## M2 · `search-messages`: búsqueda completa (lote B) — Alta · ⬜
+## M2 · `search-messages`: búsqueda completa (lote B) — Alta · ✅
 
 **Medido en producción (2026-10-22, búsquedas reales de solo lectura en GT/CL + código).**
 
@@ -172,6 +172,8 @@ Los tres fallos silenciosos (acentos, número mal formado, argumentos ignorados)
 **Log.**
 - 2026-10-22 — evaluado.
 - 2026-10-22 — medido en producción (tabla arriba); alcance ampliado de "paginación y autor" a búsqueda completa; nivel Bounded → Architectural; decisión de autor por nombre sin depender de contactos.
+- 2026-11-04 — ✅ desplegado (lote B). Los seguimientos de rendimiento `fc24e9a` (plegado de acentos por etapas, texto evaluado una vez por mensaje) y `dda55f2` (el payload de cada mensaje se lee una vez, no una por consulta jsonb) devolvieron la búsqueda de toda la cuenta a un tiempo cercano al previo al lote B. Guía de uso y salvedades: `docs/searching-whatsapp.md`.
+- **Seguimiento (lote F / P1): nombrar remitentes en una búsqueda.** Con muchos resultados la búsqueda es lenta por *nombrar* a los remitentes, no por el SQL: cuesta el directorio de contactos más hasta 8 consultas en vivo de participantes de grupo (`MENTION_GROUP_LOOKUPS` en `search-messages.ts`). Una búsqueda de 134 resultados tardó ~12,5 s en una cuenta. Candidatos: caché corta de participantes por grupo y lanzar las consultas en paralelo.
 
 ## N2 · `get-group-info` — Media · ⬜
 
@@ -217,6 +219,8 @@ Los tres fallos silenciosos (acentos, número mal formado, argumentos ignorados)
 
 **Log.**
 - 2026-10-22 — evaluado.
+- 2026-11-04 — nota del lote B: `resolveChatTarget` (usado por `read-messages`/`search-messages` con un número como `jid`) paga una consulta a `relatedChatJids` por llamada, que recorre las filas de la cuenta (único índice: `instanceId`). Ese coste por página/por llamada pasa al lote F, no al M3.
+- 2026-11-04 — lote D, hallazgo F5 de la revisión final del lote B (a resolver en D, no en B): en el camino de envío `assertNumberAllowed` (`mcp-scope.ts`) deja pasar tal cual el 422 de `resolveNumberToJid` cuando Evolution no resuelve el número, pero responde 403 (`assertChatAllowed`) cuando lo resuelve y está fuera del scope. Un token con scope de chats puede así distinguir "número que no resuelve" de "número que existe pero fuera de mi scope" = oráculo para sondear números. Las lecturas ya lo evitan (`resolveChatTarget` responde un único `NOT_ACCESSIBLE` a token acotado). Al tocar el envío en D, unificar el error para tokens acotados.
 
 ## N4 · `get-message-media` — Media · ⬜
 

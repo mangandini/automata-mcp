@@ -89,6 +89,10 @@ comes back.
 `read-messages` and `search-messages` leave reactions out unless called with
 `includeReactions: true`, and say so with `reactionsExcluded`.
 
+How to find things with them — accents, phone numbers as `jid`, an author inside a
+group, paging a long result, context around a hit, and where an empty answer is
+not "nothing" — is in [Searching WhatsApp](searching-whatsapp.md).
+
 ## Scoping a token
 
 A token is narrowed on independent axes, set when it is created and editable from

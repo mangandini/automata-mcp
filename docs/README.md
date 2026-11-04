@@ -13,6 +13,7 @@ here are about running and developing this repository.
 
 - [Using Automata](using-automata.md) — connecting Claude, organizations and roles, the MCP tools, scoping a token
 - [WhatsApp connections](whatsapp.md) — reading and searching, history import, bringing your own Evolution server
+- [Searching WhatsApp](searching-whatsapp.md) — finding messages, people in groups and context from Claude, and the caveats
 - [Telegram connections](telegram.md) — setting up the bridge, what syncs, bringing your own bridge
 - [Database connections](postgres.md) — what the table allowlist does and does not close, least-privilege roles
 - [Email (IMAP) connections](imap.md) — what syncs and what stays on the mail server, app passwords, attachments
