@@ -43,9 +43,9 @@ see, or inside one chat when `jid` is given.
   encrypted for the chat has no readable text and cannot be found by search, so a
   search that finds nothing is not proof the message does not exist.
 
-Unknown arguments are refused (HTTP 400, naming the key) instead of ignored, so a
-misspelled `since` or a made-up filter cannot silently return an unfiltered
-result.
+Unknown arguments are refused with an error naming the key (`Unrecognized key:
+"window"`) instead of ignored, so a misspelled `since` or a made-up filter cannot
+silently return an unfiltered result.
 
 ### A single CJK character is rejected
 
@@ -62,7 +62,7 @@ too short`. Search for a longer word that contains it, or read the chat with
 The folding is done in SQL with a fixed table covering the Latin-1 and Latin
 Extended-A/B letters (U+00C0 to U+024F) plus combining marks. Inside that range
 `ñ`, `ü`, `ç`, `ã`, `ő`, `ă`, `ơ` and similar all fold. Outside it nothing is
-folded, though case is still ignored:
+folded:
 
 - Vietnamese letters stored as single characters outside that range (`ạ`, `ả`,
   `ấ`, `ế`, `ệ`…) are **not** folded: typing `tieng viet` will not find
@@ -85,11 +85,11 @@ as is after the scope check) or a phone number.
   and `15550000001` are the same input), but nothing else is rewritten: a local
   format without a country code, or with a trunk prefix, is not completed for you.
   The number is resolved through WhatsApp via Evolution, never by rules in this
-  app. A number with no WhatsApp account is an explicit error for an unrestricted
+  app. A number with no WhatsApp account is an explicit error (a 404-class refusal) for an unrestricted
   token, and the generic "No accessible WhatsApp chat was found for that number"
   for a chat-scoped token (so a scoped token cannot use it to probe which numbers
-  exist). If the WhatsApp account is unreachable the answer is a 503, not an empty
-  result.
+  exist). If the WhatsApp account is unreachable the answer is a 503-class error,
+  not an empty result.
 - **One number can be several chats.** WhatsApp stores a person under their phone
   number (`…@s.whatsapp.net`) and sometimes under an internal id (`…@lid`). The
   tool resolves the number, then adds the other forms the stored history links to
@@ -97,10 +97,12 @@ as is after the scope check) or a phone number.
   which forms it covered: `chatsSearched` in `search-messages`, `chatsRead` in
   `read-messages`.
 - **The `@lid` caveat.** The link between a phone number and its `@lid` chat is
-  recorded only on messages received live, not on history imported at pairing. So
-  a chat that exists only as an `@lid` may not be reachable by number. When a
-  number-addressed call returns nothing, the `note` says so and points at
-  `list-chats`: search the chat list by the person's name, take the `jid` it
+  recorded only by live traffic after pairing, not on history imported at pairing.
+  So a chat that exists only as an `@lid` may not be reachable by number, and a
+  call that does return messages can still be missing an unlinked `@lid` form
+  with no warning: check `chatsRead` / `chatsSearched` to see which forms were
+  actually covered. When a number-addressed call returns nothing, the `note` says
+  so and points at `list-chats`: search the chat list by the person's name, take the `jid` it
   returns (it may end in `@lid`), and use that. An empty result for a number is
   "not found under the forms I could link", not "no such conversation".
 
@@ -113,7 +115,7 @@ name or a phone number and needs the group's `jid`.
 { "jid": "120363000000000001@g.us", "author": "Ana", "since": "2026-03-01" }
 ```
 
-- **Groups only.** In a one-to-one chat `author` is refused (400): the sender is
+- **Groups only.** In a one-to-one chat `author` is refused: the sender is
   the other person or you, and `fromMe` tells them apart. In `search-messages`
   `author` also requires `jid`, and cannot be combined with `fromMe: true`. There
   is no author search across the whole account.
@@ -168,12 +170,16 @@ while `hasMore` is `true`.
 **The page + until pattern.** Results come from live SQL, newest first, so a
 message arriving between two calls would shift every later page. To prevent that
 the first response pins the upper bound of the range and returns it as
-`window.until`. To get the next page, call again with the **same arguments**,
+`window.until`. (`read-messages` pins it only when you pass `since`; for a plain
+newest-first read with no date range there is no `window`, so pass an `until` of
+your own on the first call if you intend to page through a busy chat.) To get the next page, call again with the **same arguments**,
 `page` set to `nextPage` and `until` set to `window.until`. Pass back `until`, not
 `window`: `window` is output only and would be rejected as an unknown argument.
 The `note` of a `search-messages` response with `hasMore` spells out the exact
-call. Keep going until `hasMore` is `false`; the sum of `count` over the pages
-equals `totalMatching`, with no repeated ids. `truncated` is kept for older
+call. Keep going until `hasMore` is `false`. For `search-messages`, `totalMatching`
+counts distinct matching messages, so the `count`s of all pages should add up to
+it with no repeated ids (this is the intended invariant of the paging design;
+check it against your own deployment if you rely on it). `truncated` is kept for older
 callers and always equals `hasMore`.
 
 `hasMore` comes from fetching one row more than the page, never from the total, so
@@ -200,8 +206,8 @@ instead of a page. Take the hit's `jid` and `id` from `search-messages`:
   `hasMoreBefore` and `hasMoreAfter`. Reactions are left out of the neighbours
   (never out of the message you named) unless `includeReactions` is set.
 - `around` cannot be combined with `page` above 1, `since`, `until` or `author`
-  (400), and `before`/`after` need `around`.
-- An id that is not in the chat answers 404; the id is looked up inside the chat
+  (an error), and `before`/`after` need `around`.
+- An id that is not in the chat is an error; the id is looked up inside the chat
   you name, never across the account.
 - Control records among the neighbours are skipped, so the window can hold fewer
   than `before` / `after` readable messages; `protocolMessagesExcluded` and the

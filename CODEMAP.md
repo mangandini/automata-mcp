@@ -58,7 +58,7 @@ apps/telegram-bridge/src/   servicio Telegram
 docker/aio/                 imagen todo-en-uno (s6-overlay: postgres, redis, evolution, web, bridge)
 docker-compose.dev.yml      solo servicios para dev (Nuxt corre en host)
 docker-compose.yml          stack self-host completo
-docs/                       manual de operador (self-hosting, whatsapp, telegram, postgres, imap, alerts, 2FA, railway, releases)
+docs/                       manual de operador (self-hosting, whatsapp, searching-whatsapp, telegram, postgres, imap, alerts, 2FA, railway, releases)
 .github/workflows/          release.yml, release-check.yml
 ```
 

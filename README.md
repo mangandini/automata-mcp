@@ -132,7 +132,7 @@ from it. See [Self-hosting](docs/self-hosting.md).
 - Product documentation: <https://www.getautomata.app/docs>
 - Running and developing this repository: [docs/](docs/README.md) —
   [self-hosting](docs/self-hosting.md), [Railway](docs/deploy-railway.md),
-  [WhatsApp](docs/whatsapp.md), [Telegram](docs/telegram.md),
+  [WhatsApp](docs/whatsapp.md), [searching WhatsApp](docs/searching-whatsapp.md), [Telegram](docs/telegram.md),
   [email](docs/imap.md), [PostgreSQL](docs/postgres.md), [alerts](docs/alerts.md),
   [two-factor](docs/two-factor.md),
   [development](docs/development.md)
