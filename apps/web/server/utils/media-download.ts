@@ -64,6 +64,17 @@ const semaphore = createSemaphore(MAX_CONCURRENT, SLOT_WAIT_MS)
 // One PDF worker at a time: a hostile file can take a worker to ~450 MB, and two
 // of them were measured at 860-940 MiB together, which leaves nothing at 1 GiB.
 const pdfSemaphore = createSemaphore(1, SLOT_WAIT_MS)
+/**
+ * File responses of the link route in delivery at once, per process. A
+ * response's bytes stay referenced until the client has read them all, long
+ * after the download slot is released, and a slow reader can take minutes; with
+ * the cache off or the entry gone every POST holds its own copy, up to the link
+ * cap. So at most this many such buffers exist: 4 x the link cap (100 MB at the
+ * default 25 MB). Cache hits are counted too, at full size, to keep the bound
+ * one number.
+ */
+const MAX_DELIVERIES = 4
+const deliverySemaphore = createSemaphore(MAX_DELIVERIES, SLOT_WAIT_MS)
 const cooldown = createCooldown<CooldownCause>(COOLDOWN_MS)
 const inflight = createInflight<EvolutionMedia>()
 
@@ -136,9 +147,27 @@ export function withMediaSlot<T>(fn: () => Promise<T>): Promise<T> {
  * two cannot deadlock. Each wait has its own 20 s limit and answers `busy`
  * (with `retryAfterSec`) when it runs out. Like `withMediaSlot`, never call it
  * from inside a slot.
+ *
+ * The third gate, `acquireDeliveryPermit`, sits in front of both: the order
+ * across all three is **delivery permit -> PDF permit -> shared slot**, and
+ * the link route, the only holder of a delivery permit, never takes the PDF
+ * permit. Nothing holding a PDF permit or a shared slot waits for a delivery
+ * permit.
  */
 export function withPdfSlot<T>(fn: () => Promise<T>): Promise<T> {
   return pdfSemaphore.run(() => semaphore.run(fn))
+}
+
+/**
+ * A hold on one of the `MAX_DELIVERIES` file responses, for the link route:
+ * taken before the cache is looked at and released when the response closes
+ * (sent, or the client went away), or at once when nothing is sent. Waits at
+ * most 20 s, then `busy`. Taken before any shared slot (the download on a
+ * cache miss takes one while this is held), never inside one. The returned
+ * release is safe to call more than once.
+ */
+export function acquireDeliveryPermit(): Promise<() => void> {
+  return deliverySemaphore.acquire()
 }
 
 /** A deleted connection takes its cached files with it. */

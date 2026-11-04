@@ -3,7 +3,7 @@ import type { AppMediaLink } from './app-db'
 import { clientIp } from './login-throttle'
 import { findMediaMessage } from './evolution-db'
 import { authorizeMediaLink, claimMediaDownload, findMediaLinkByToken, refundMediaDownload } from './media-links'
-import { cachedMedia, downloadVerifiedMedia, mediaLimits } from './media-download'
+import { acquireDeliveryPermit, cachedMedia, downloadVerifiedMedia, mediaLimits } from './media-download'
 import { MediaError, mediaFailureMessage } from './media-errors.ts'
 import { createRateLimiter } from './media-memory.ts'
 import { redactText } from './redact'
@@ -129,14 +129,15 @@ async function servePage(event: H3Event, token: string): Promise<string> {
 /**
  * POST: the file. Order matters:
  *
- *   rate limit -> link -> authorization -> claim -> (cache | row + fetch)
+ *   rate limit -> link -> authorization -> claim -> delivery permit -> (cache | row + fetch)
  *
  * The claim comes before any fetch, as one conditional write, so two taps
  * racing for the last download cannot both win. A cache hit still claims: the
  * allowance counts deliveries, not WhatsApp calls. Anything that fails before
  * the bytes are in hand gives its claim back (the person got nothing); a client
  * that goes away mid-body keeps it. Authorization runs on every POST, so a
- * revoked token stops a link even for bytes already in the cache.
+ * revoked token stops a link even for bytes already in the cache. A full
+ * delivery gate is `busy` (503, Retry-After) and gives the claim back.
  */
 export function serveMediaFile(event: H3Event, token: string): Promise<string | Buffer> {
   return answeringOutages(event, () => serveFile(event, token))
@@ -154,9 +155,23 @@ async function serveFile(event: H3Event, token: string): Promise<string | Buffer
 
   let claimed = false
   let delivered = false
+  let releaseDelivery: (() => void) | undefined
   try {
     claimed = await claimMediaDownload(link.id)
     if (!claimed) return notice(event, 'limit')
+
+    // Bounds how many response buffers exist at once (`acquireDeliveryPermit`).
+    // Released when the response closes, whether the body was sent or the
+    // client went away, so a slow reader holds it for as long as it reads.
+    try {
+      releaseDelivery = await acquireDeliveryPermit()
+    }
+    catch (error) {
+      return failureNotice(event, link, error)
+    }
+    const res = event.node.res
+    res.once('close', releaseDelivery)
+    if (res.destroyed) releaseDelivery()
 
     const { linkCap } = mediaLimits()
     let bytes: Buffer
@@ -215,6 +230,7 @@ async function serveFile(event: H3Event, token: string): Promise<string | Buffer
     return bytes
   }
   finally {
+    if (!delivered) releaseDelivery?.()
     if (claimed && !delivered) await refundMediaDownload(link.id)
   }
 }

@@ -115,14 +115,16 @@ export function createMediaCache(options: { maxBytes: number, ttlMs: number, now
  * Caps how many downloads run at once in this process. A caller that cannot get
  * a slot within `acquireTimeoutMs` is told to come back (`busy`, 10 s) rather
  * than queueing without limit behind slow WhatsApp answers. Slots are handed to
- * waiters in arrival order, and a slot is released when the task settles,
- * thrown or not.
+ * waiters in arrival order. `run` releases when the task settles, thrown or
+ * not; `acquire` hands back the release for a hold that outlives one function
+ * (a response body still being sent), and calling it more than once releases
+ * once.
  */
 export function createSemaphore(permits: number, acquireTimeoutMs: number) {
   let free = permits
   const waiters: Array<() => void> = []
 
-  function acquire(): Promise<void> {
+  function take(): Promise<void> {
     if (free > 0) {
       free--
       return Promise.resolve()
@@ -152,8 +154,17 @@ export function createSemaphore(permits: number, acquireTimeoutMs: number) {
   }
 
   return {
+    async acquire(): Promise<() => void> {
+      await take()
+      let held = true
+      return () => {
+        if (!held) return
+        held = false
+        release()
+      }
+    },
     async run<T>(fn: () => Promise<T>): Promise<T> {
-      await acquire()
+      await take()
       try {
         return await fn()
       } finally {
