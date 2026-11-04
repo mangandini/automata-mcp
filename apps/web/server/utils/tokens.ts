@@ -1,3 +1,4 @@
+import { keepOptInNames } from '#shared/tool-optin'
 import type { AppMcpToken, Db } from './app-db'
 import type { McpScope } from './mcp-scope'
 import type { ScopeInput } from './scope-schema'
@@ -94,7 +95,8 @@ function scopeFields(scope: McpScope) {
     all_tables: scope.allTables,
     table_names: scope.allTables ? [] : scope.tableNames,
     all_tools: scope.allTools,
-    tool_names: scope.allTools ? [] : scope.toolNames,
+    // Opt-in tools stay listed under "all actions" — see `shared/tool-optin.ts`.
+    tool_names: scope.allTools ? keepOptInNames(scope.toolNames) : scope.toolNames,
   }
 }
 

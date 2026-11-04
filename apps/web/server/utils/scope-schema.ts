@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { keepOptInNames } from '#shared/tool-optin'
 import type { McpScope } from './mcp-scope'
 
 /**
@@ -35,7 +36,10 @@ export type ScopeInput = z.infer<typeof scopeSchema>
 export function scopeFromInput(input: ScopeInput): McpScope {
   return {
     allTools: input.all_tools,
-    toolNames: input.all_tools ? [] : dedupe(input.tool_names),
+    // "All actions" implies every ordinary tool, so none of them is stored; the
+    // opt-in ones are the exception and must survive, or ticking one under
+    // "All actions" would be silently lost on save.
+    toolNames: input.all_tools ? keepOptInNames(input.tool_names) : dedupe(input.tool_names),
     allChats: input.all_chats,
     chatJids: input.all_chats ? [] : dedupe(input.chat_jids),
     allTables: input.all_tables,

@@ -2,6 +2,7 @@ import type { H3Event } from 'h3'
 import type { AppInstance } from './app-db'
 import type { McpAuth } from './mcp-auth'
 import type { InstanceKind } from '#shared/connection'
+import { toolGranted } from '#shared/tool-optin'
 
 /**
  * Connector token scope: which chats a token may touch, and which tools it may
@@ -139,9 +140,9 @@ export function isToolAllowed(event: H3Event, toolName: string, kind: InstanceKi
   // union the single post-resolution reader of `instance.kind`.
   if (auth.kind !== kind) return false
 
-  const scope = auth.scope
-  if (scope.allTools) return true
-  return scope.toolNames.includes(toolName)
+  // `toolGranted`, not `allTools || includes`: an opt-in tool is granted only
+  // when named, so "all actions" never reaches it.
+  return toolGranted(auth.scope, toolName)
 }
 
 // ── tables ─────────────────────────────────────────────────────────────────

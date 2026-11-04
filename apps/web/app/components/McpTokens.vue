@@ -59,8 +59,7 @@ function initialScope(): TokenScope {
     case 'imap':
       return openScope()
     case 'postgres': {
-      const readTools = (toolCatalogue.value?.tools ?? []).filter(t => t.readOnly).map(t => t.name)
-      return readOnlyScope(readTools)
+      return readOnlyScope(toolCatalogue.value?.tools ?? [])
     }
     default:
       return assertNever(props.kind, 'connection kind')

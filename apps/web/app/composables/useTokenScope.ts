@@ -1,10 +1,13 @@
 import { assertNever } from '#shared/connection'
+import { keepOptInNames } from '#shared/tool-optin'
 
 export interface McpToolInfo {
   name: string
   title: string
   description: string
   readOnly: boolean
+  /** Granted only when ticked by name; "all actions" does not include it. */
+  optIn: boolean
 }
 
 export interface ScopedChat {
@@ -65,12 +68,14 @@ export function openScope(): TokenScope {
  * Read-only is the default because the cost of the two mistakes is not
  * symmetric — a token that turns out to need writes is one edit away, and a
  * token that turns out not to have needed them may already have made some.
- * The caller passes the read tools because only the server knows what they are.
+ * The caller passes the catalogue because only the server knows what the tools
+ * are. An opt-in tool is left unticked even when it only reads: it is not part
+ * of any default, whatever its annotations say.
  */
-export function readOnlyScope(readToolNames: string[]): TokenScope {
+export function readOnlyScope(tools: McpToolInfo[]): TokenScope {
   return {
     all_tools: false,
-    tool_names: [...readToolNames],
+    tool_names: tools.filter(t => t.readOnly && !t.optIn).map(t => t.name),
     all_chats: true,
     chat_jids: [],
     all_tables: true,
@@ -107,8 +112,10 @@ export function describeScope(scope: TokenScope, kind: InstanceKind): string {
       return assertNever(kind, 'connection kind')
   }
 
-  if (scope.all_tools && dataOpen) return 'Full access'
-  return [data, scope.all_tools ? 'all actions' : plural(scope.tool_names.length, 'action')].join(' · ')
+  // "All actions" never includes an opt-in tool, so it is named when held.
+  const attachments = scope.all_tools && keepOptInNames(scope.tool_names).length > 0 ? ' + attachments' : ''
+  if (scope.all_tools && dataOpen) return `Full access${attachments}`
+  return [data, scope.all_tools ? `all actions${attachments}` : plural(scope.tool_names.length, 'action')].join(' · ')
 }
 
 function plural(n: number, noun: string): string {

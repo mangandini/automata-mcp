@@ -75,6 +75,15 @@ const manualError = ref('')
 // request is dispatched, and treating it as settled flashes the empty state.
 const loading = (status: Ref<string>) => computed(() => status.value === 'idle' || status.value === 'pending')
 const toolsLoading = loading(toolStatus)
+
+/**
+ * Opt-in tools are listed apart from the actions: "All actions" does not include
+ * them, so a checkbox inside the "Only selected" list — which is hidden under
+ * "All actions" — would read as part of that choice. Apart, and visible in both
+ * modes, it reads as what it is: something to switch on deliberately.
+ */
+const actionTools = computed(() => (toolData.value?.tools ?? []).filter(t => !t.optIn))
+const extraTools = computed(() => (toolData.value?.tools ?? []).filter(t => t.optIn))
 const chatsLoading = loading(chatStatus)
 const tablesLoading = loading(tableStatus)
 
@@ -222,7 +231,7 @@ async function addByNumber() {
 
         <template v-else>
           <div
-            v-for="tool in toolData?.tools ?? []"
+            v-for="tool in actionTools"
             :key="tool.name"
             class="flex items-start gap-3"
           >
@@ -245,6 +254,37 @@ async function addByNumber() {
             </div>
           </div>
         </template>
+      </div>
+
+      <div v-if="extraTools.length > 0" class="space-y-2 rounded-md border p-3">
+        <div>
+          <h4 class="text-sm font-medium">
+            Extras (off by default)
+          </h4>
+          <p class="text-xs text-muted-foreground">
+            Not included in "All actions". Tick to allow.
+          </p>
+        </div>
+        <div
+          v-for="tool in extraTools"
+          :key="tool.name"
+          class="flex items-start gap-3"
+        >
+          <Checkbox
+            :id="`tool-${tool.name}`"
+            :model-value="scope.tool_names.includes(tool.name)"
+            class="mt-0.5"
+            @update:model-value="toggle('tool_names', tool.name, $event === true)"
+          />
+          <div class="min-w-0 flex-1">
+            <Label :for="`tool-${tool.name}`" class="flex items-center gap-2 font-normal">
+              {{ tool.title }}
+            </Label>
+            <p class="mt-0.5 text-xs text-muted-foreground">
+              Downloads attachments and creates download links valid for 1 hour.
+            </p>
+          </div>
+        </div>
       </div>
     </section>
 

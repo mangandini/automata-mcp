@@ -43,6 +43,7 @@ apps/web/
   nuxt.config.ts            módulos (shadcn-nuxt, mcp-toolkit), nitro asyncContext+tasks, scheduledTasks, runtimeConfig
   modules/mcp-token-route.ts registra /mcp/:token (frágil: depende de archivo interno del toolkit)
   shared/connection.ts      InstanceKind, ConnectionFamily, ConnectionState, assertNever  (#shared)
+  shared/tool-optin.ts      OPT_IN_TOOLS, isOptInTool, toolGranted, keepOptInNames  (#shared)
   app/                      FRONTEND (Vue, shadcn-vue en components/ui/)
   server/
     middleware/session.ts   resuelve cookie (sale temprano en /mcp*)

@@ -1,3 +1,5 @@
+import { toolGranted } from '#shared/tool-optin'
+
 /**
  * Read tool, and the parity of `get-connection-status`: something cheap for a
  * model to call before it starts guessing. Takes no arguments, because the token
@@ -38,7 +40,7 @@ export default defineKindTool({
       port: instance.db_port,
       allTables: scope.allTables,
       ...(!scope.allTables && { tablesInScope: scope.tableNames }),
-      canWrite: scope.allTools || scope.toolNames.includes('run-statement'),
+      canWrite: toolGranted(scope, 'run-statement'),
     }
   },
 })

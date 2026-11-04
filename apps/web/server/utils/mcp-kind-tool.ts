@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { ZodRawShape } from 'zod'
+import { isOptInTool } from '#shared/tool-optin'
 import type { InstanceKind } from './mcp-scope'
 
 /**
@@ -86,6 +87,15 @@ export function defineKindTool<
     group?: string
     available?: () => boolean
     /**
+     * The tool reaches further than reading what the token already reads, so
+     * "all actions" does not include it: a token has it only when its name is
+     * ticked. Must agree with `OPT_IN_TOOLS` in `shared/tool-optin.ts`, which is
+     * what scope writing consults without loading any tool module; a mismatch
+     * throws when the tool is defined. A tool that omits the flag is not opt-in,
+     * so every existing tool keeps loading.
+     */
+    optIn?: boolean
+    /**
      * Refuse arguments the schema does not name.
      *
      * A plain shape is stripped silently by zod, so a caller who misspells or
@@ -98,7 +108,13 @@ export function defineKindTool<
     strictInput?: boolean
   },
 ): ToolDefinition<InputSchema, OutputSchema> {
-  const { kind, group, available, strictInput, ...rest } = definition
+  const { kind, group, available, strictInput, optIn, ...rest } = definition
+
+  if ((optIn ?? false) !== isOptInTool(rest.name)) {
+    throw new Error(
+      `Tool "${rest.name}" is ${optIn ? '' : 'not '}flagged optIn but ${isOptInTool(rest.name) ? 'is' : 'is not'} listed in OPT_IN_TOOLS (shared/tool-optin.ts); the two must agree.`,
+    )
+  }
   const kinds: readonly InstanceKind[] = Array.isArray(kind) ? kind : [kind as InstanceKind]
 
   TOOL_KINDS.set(rest.name, kinds)
