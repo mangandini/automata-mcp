@@ -73,8 +73,7 @@ export function createMediaCache(options: { maxBytes: number, ttlMs: number, now
         remove(key)
         return undefined
       }
-      entries.delete(key)
-      entries.set(key, entry)
+      touch(entries, key, entry)
       return { bytes: entry.bytes, mimeType: entry.mimeType }
     },
 
@@ -98,7 +97,7 @@ export function createMediaCache(options: { maxBytes: number, ttlMs: number, now
     evictInstance(instanceId: string): number {
       const prefix = `${instanceId}\0`
       let removed = 0
-      for (const key of [...entries.keys()]) {
+      for (const key of entries.keys()) {
         if (!key.startsWith(prefix)) continue
         remove(key)
         removed++
@@ -172,6 +171,21 @@ export function createSemaphore(permits: number, acquireTimeoutMs: number) {
 const MAX_KEYS = 10_000
 const KEYS_AFTER_TRIM = 9_000
 
+/** A Map iterates in insertion order, so re-inserting makes a key the newest. */
+function touch<V>(map: Map<string, V>, key: string, value: V): void {
+  map.delete(key)
+  map.set(key, value)
+}
+
+/** Expired entries first, then the oldest insertions, down to `KEYS_AFTER_TRIM`. */
+function trimKeys<V>(map: Map<string, V>, isExpired: (value: V) => boolean): void {
+  for (const [key, value] of map) if (isExpired(value)) map.delete(key)
+  for (const key of map.keys()) {
+    if (map.size <= KEYS_AFTER_TRIM) break
+    map.delete(key)
+  }
+}
+
 /**
  * "Do not ask again for a while", per key. Set after Evolution timed out on a
  * message: asking again at once would only pile a second 30 s wait behind the
@@ -180,21 +194,11 @@ const KEYS_AFTER_TRIM = 9_000
 export function createCooldown(ms: number, now: Clock = Date.now) {
   const until = new Map<string, number>()
 
-  function sweep(at: number): void {
-    for (const [key, end] of until) if (end <= at) until.delete(key)
-    // Still over the bound with nothing expired: oldest insertions go.
-    for (const key of until.keys()) {
-      if (until.size <= KEYS_AFTER_TRIM) break
-      until.delete(key)
-    }
-  }
-
   return {
     start(key: string): void {
       const at = now()
-      until.delete(key)
-      until.set(key, at + ms)
-      if (until.size > MAX_KEYS) sweep(at)
+      touch(until, key, at + ms)
+      if (until.size > MAX_KEYS) trimKeys(until, end => end <= at)
     },
     remainingMs(key: string): number {
       const end = until.get(key)
@@ -250,30 +254,17 @@ export function createInflight<T>() {
 export function createRateLimiter(limit: number, windowMs: number, now: Clock = Date.now) {
   const hits = new Map<string, number[]>()
 
-  function sweep(at: number): void {
-    for (const [key, times] of hits) {
-      if (times.length === 0 || times[times.length - 1]! <= at - windowMs) hits.delete(key)
-    }
-    for (const key of hits.keys()) {
-      if (hits.size <= KEYS_AFTER_TRIM) break
-      hits.delete(key)
-    }
-  }
-
   return {
     hit(key: string): { allowed: boolean, retryAfterSec: number } {
       const at = now()
       const recent = (hits.get(key) ?? []).filter(time => time > at - windowMs)
-      if (recent.length >= limit) {
-        hits.delete(key)
-        hits.set(key, recent)
-        return { allowed: false, retryAfterSec: Math.max(1, Math.ceil((recent[0]! + windowMs - at) / 1000)) }
-      }
-      recent.push(at)
-      hits.delete(key)
-      hits.set(key, recent)
-      if (hits.size > MAX_KEYS) sweep(at)
-      return { allowed: true, retryAfterSec: 0 }
+      const allowed = recent.length < limit
+      if (allowed) recent.push(at)
+      touch(hits, key, recent)
+      if (hits.size > MAX_KEYS) trimKeys(hits, times => times[times.length - 1]! <= at - windowMs)
+      return allowed
+        ? { allowed, retryAfterSec: 0 }
+        : { allowed, retryAfterSec: Math.max(1, Math.ceil((recent[0]! + windowMs - at) / 1000)) }
     },
     get size(): number {
       return hits.size
