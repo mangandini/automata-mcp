@@ -153,9 +153,13 @@ export async function getMessageMedia(args: {
 
   // Only images and PDFs are ever read by the tool, and only within the read
   // cap; everything else (other documents, anything over the cap) is a link.
+  // A document is never downloaded here, so with no declared size nothing
+  // tells whether the link will be able to serve it: the note says when it can.
   if (kind === 'document') {
     notes.push(linked(
-      'This is a document the connector does not read; it is available through the download link only.',
+      media.declaredSize === undefined
+        ? `This is a document the connector does not read and its size is not declared; the download link will serve it if it is under ${megabytes(linkCap)}.`
+        : 'This is a document the connector does not read; it is available through the download link only.',
       'This is a document the connector does not read.'))
   }
   else if (media.declaredSize !== undefined && media.declaredSize > readCap) {
@@ -163,23 +167,28 @@ export async function getMessageMedia(args: {
     notes.push(linked(`${declared}; it is available through the download link only.`, `${declared}.`))
   }
   else {
+    // Never more than the link cap either: a file the route would refuse must
+    // not be read, cached and then offered as a link that is dead from birth
+    // (an operator may set the link cap below the read cap).
     try {
       const downloaded = await downloadVerifiedMedia(
         instance,
         { key: row.key, inner: media.inner, sha256: media.sha256 },
-        { maxBytes: readCap },
+        { maxBytes: Math.min(readCap, linkCap) },
       )
       bytes = downloaded.bytes
       downloadedMime = downloaded.mimeType
     }
     catch (error) {
-      if (error instanceof MediaError && error.kind === 'too-large') {
-        const larger = `The file is larger than the ${megabytes(readCap)} the connector reads`
-        notes.push(linked(`${larger}, so only the download link is given.`, `${larger}, so it was not read.`))
+      if (!(error instanceof MediaError && error.kind === 'too-large')) throw await mediaFailureError(instance, error)
+      // Over the link cap as well: nothing to show and nothing to link.
+      if (linkCap <= readCap) {
+        throw createError({ statusCode: 413, message: `This file is larger than the ${megabytes(linkCap)} this connector handles.` })
       }
-      else {
-        throw await mediaFailureError(instance, error)
-      }
+      // Over the read cap, size unknown beyond that: the link may or may not
+      // be able to serve it, and the note says which.
+      const larger = `The file is larger than the ${megabytes(readCap)} the connector reads, so it was not read`
+      notes.push(linked(`${larger}; the download link will serve it if it is under ${megabytes(linkCap)}.`, `${larger}.`))
     }
   }
 
@@ -246,6 +255,11 @@ export async function getMessageMedia(args: {
   let download: { url: string, expiresAt: string } | undefined
   if (!mediaLinksEnabled()) {
     notes.push('No download link was created: this server has no public URL configured (NUXT_PUBLIC_APP_URL).')
+  }
+  else if (bytes && bytes.length > linkCap) {
+    // Cannot happen with the download capped at the link cap; a link the route
+    // refuses is worse than none.
+    console.error(`[media] BUG: ${bytes.length} bytes read for a message of connection ${instance.id}, over the ${linkCap} link cap; no link made`)
   }
   else {
     try {
