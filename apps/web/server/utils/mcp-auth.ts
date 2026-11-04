@@ -1,7 +1,7 @@
 import { assertNever } from '#shared/connection'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import type { H3Event } from 'h3'
-import type { AppInstance, AppMcpToken, AppUser, OrgRole } from './app-db'
+import type { AppInstance, AppMcpToken, AppUser, Db, OrgRole } from './app-db'
 import type { McpScope } from './mcp-scope'
 import type { EvolutionCredentials } from './evolution'
 import type { TelegramCredentials } from './telegram'
@@ -54,7 +54,7 @@ export type McpAuth =
  * The joins are LEFT so a missing piece reads as a missing piece (and is logged
  * as one) rather than as no such token.
  */
-interface McpTokenFacts extends Pick<AppMcpToken,
+export interface McpTokenFacts extends Pick<AppMcpToken,
   'id' | 'assigned_to' | 'instance' | 'token_hash' | 'expires_at' | 'revoked'
   | 'all_chats' | 'chat_jids' | 'all_tables' | 'table_names' | 'all_tools' | 'tool_names'> {
   user_email?: string
@@ -62,6 +62,43 @@ interface McpTokenFacts extends Pick<AppMcpToken,
   member_role?: OrgRole
   member_org?: string
   assigned: boolean
+}
+
+/** Which token to load the facts of: by the hash of the secret presented, or by id. */
+export type TokenLookup = { hash: string } | { id: string }
+
+/**
+ * The token's row joined to everything that decides whether it still works —
+ * the single copy of that query, shared by every caller that has to answer "may
+ * this token be used right now". It only reads: what a missing piece means, and
+ * which failure it maps to, stays with the caller (see `resolveMcpAuth`).
+ *
+ * `assigned` is about the token's own `instance`, and `member_org` is the org of
+ * the holder's membership: a caller compares that against the org of the
+ * instance **of the token**, never one it was handed from somewhere else.
+ */
+export async function selectTokenFacts(sql: Db, by: TokenLookup): Promise<McpTokenFacts | undefined> {
+  const [facts] = await sql<McpTokenFacts[]>`
+    SELECT t.id, t.assigned_to, t.instance, t.token_hash, t.expires_at, t.revoked,
+           t.all_chats, t.chat_jids, t.all_tables, t.table_names, t.all_tools, t.tool_names,
+           u.email AS user_email, u.name AS user_name,
+           m.role AS member_role, m.org AS member_org,
+           EXISTS (
+             SELECT 1 FROM app.instance_assignments a
+             WHERE a.user_id = t.assigned_to AND a.instance = t.instance
+           ) AS assigned
+    FROM app.mcp_tokens t
+    LEFT JOIN app.users u ON u.id = t.assigned_to
+    LEFT JOIN app.memberships m ON m.user_id = t.assigned_to
+    WHERE ${'hash' in by ? sql`t.token_hash = ${by.hash}` : sql`t.id = ${by.id}`}
+  `
+  return facts
+}
+
+/** Neither revoked nor past its expiry. Says nothing about whether the holder still reaches the connection. */
+export function isTokenLive(facts: Pick<McpTokenFacts, 'revoked' | 'expires_at'>, now: number = Date.now()): boolean {
+  if (facts.revoked) return false
+  return !(facts.expires_at && new Date(facts.expires_at).getTime() <= now)
 }
 
 /** Mint a new token. The plaintext is returned once and never stored. */
@@ -130,20 +167,7 @@ export async function resolveMcpAuth(event: H3Event): Promise<McpAuth | undefine
   let instance: AppInstance | undefined
   try {
     const sql = await appDb()
-    ;[record] = await sql<McpTokenFacts[]>`
-      SELECT t.id, t.assigned_to, t.instance, t.token_hash, t.expires_at, t.revoked,
-             t.all_chats, t.chat_jids, t.all_tables, t.table_names, t.all_tools, t.tool_names,
-             u.email AS user_email, u.name AS user_name,
-             m.role AS member_role, m.org AS member_org,
-             EXISTS (
-               SELECT 1 FROM app.instance_assignments a
-               WHERE a.user_id = t.assigned_to AND a.instance = t.instance
-             ) AS assigned
-      FROM app.mcp_tokens t
-      LEFT JOIN app.users u ON u.id = t.assigned_to
-      LEFT JOIN app.memberships m ON m.user_id = t.assigned_to
-      WHERE t.token_hash = ${hash}
-    `
+    record = await selectTokenFacts(sql, { hash })
     if (record) instance = await getRow<AppInstance>('instances', record.instance)
   } catch (error) {
     // Answering 401 here would tell a client its valid token had been revoked
@@ -162,10 +186,7 @@ export async function resolveMcpAuth(event: H3Event): Promise<McpAuth | undefine
     return undefined
   }
 
-  if (record.revoked) return undefined
-  if (record.expires_at && new Date(record.expires_at).getTime() <= Date.now()) {
-    return undefined
-  }
+  if (!isTokenLive(record)) return undefined
 
   // The token points at a row that is gone. A dead credential, not an outage.
   if (!instance || !record.user_email) return undefined
