@@ -50,8 +50,15 @@ const WORKER_LIMITS = { maxOldGenerationSizeMb: 256, maxYoungGenerationSizeMb: 3
  * unrelated allocation at the same moment can trip it: the cost of that is one
  * `unreadable` answer for a file that can be asked for again.
  */
-const MAX_RSS_GROWTH_BYTES = 512 * 1024 * 1024
 const RSS_POLL_MS = 50
+
+export interface PdfWorkerLimits {
+  /** Wall-clock cap for opening and reading together. */
+  maxMs: number
+  /** RSS growth that kills the worker; `Infinity` switches the guard off. */
+  maxRssGrowthBytes: number
+}
+const DEFAULT_LIMITS: PdfWorkerLimits = { maxMs: PDF_LIMITS.maxMs, maxRssGrowthBytes: 512 * 1024 * 1024 }
 
 /**
  * Reads the first `maxPages` pages and posts each one's text as it goes, so
@@ -119,7 +126,7 @@ interface WorkerRun {
   pages: string[]
 }
 
-function runInWorker(bytes: Buffer, maxChars: number): Promise<WorkerRun> {
+function runInWorker(bytes: Buffer, maxChars: number, limits: PdfWorkerLimits): Promise<WorkerRun> {
   return new Promise((resolve) => {
     // A copy, transferred: the caller keeps its bytes (cache, link) and the worker owns its own.
     const copy = new Uint8Array(bytes)
@@ -135,10 +142,10 @@ function runInWorker(bytes: Buffer, maxChars: number): Promise<WorkerRun> {
       void worker.terminate().catch(() => {})
       resolve(run)
     }
-    const timer = setTimeout(() => finish('deadline'), PDF_LIMITS.maxMs)
+    const timer = setTimeout(() => finish('deadline'), limits.maxMs)
     const rssAtStart = process.memoryUsage.rss()
     const guard = setInterval(() => {
-      if (process.memoryUsage.rss() - rssAtStart > MAX_RSS_GROWTH_BYTES) finish('failed')
+      if (process.memoryUsage.rss() - rssAtStart > limits.maxRssGrowthBytes) finish('failed')
     }, RSS_POLL_MS)
 
     try {
@@ -166,8 +173,13 @@ function runInWorker(bytes: Buffer, maxChars: number): Promise<WorkerRun> {
   })
 }
 
-export async function extractPdfForModel(bytes: Buffer, options: { maxChars: number }): Promise<PdfForModel> {
-  const run = await runInWorker(bytes, options.maxChars)
+export function extractPdfForModel(bytes: Buffer, options: { maxChars: number }): Promise<PdfForModel> {
+  return extractPdfWithLimits(bytes, options, DEFAULT_LIMITS)
+}
+
+/** `extractPdfForModel` with the worker's limits spelled out, so each can be exercised on its own. */
+export async function extractPdfWithLimits(bytes: Buffer, options: { maxChars: number }, limits: PdfWorkerLimits): Promise<PdfForModel> {
+  const run = await runInWorker(bytes, options.maxChars, limits)
   if (run.outcome === 'encrypted') return { ok: false, reason: 'encrypted' }
   // A parser that died (crash, memory, a page it could not read) leaves no honest
   // account of what the rest says, and the stop reasons we can state are caps, not
