@@ -1,7 +1,7 @@
 /**
  * Text of a WhatsApp PDF for the model, read through `unpdf` (a serverless
- * build of pdf.js, no native code). Imports only `node:worker_threads` and
- * `media-budget.ts` (explicit `.ts`), so a plain `node` loads it for checks.
+ * build of pdf.js, no native code). Imports `node:*` modules and
+ * `media-budget.ts` (explicit `.ts`) only, so a plain `node` loads it for checks.
  *
  * pdf.js runs in a worker thread, never on the main one. Its time cap cannot be
  * enforced from the same thread: one Flate stream of 1.9 MB inflating to 2 GB
@@ -16,6 +16,11 @@
  * is only the location of `unpdf`, resolved here (where bundler and runtime
  * agree on `node_modules`) and passed in, since an eval worker resolves bare
  * names against the process's working directory, which is not the app's.
+ *
+ * Every way a worker can fail is logged here with its cause and nothing taken
+ * from the file (no content, no names), because the caller only gets
+ * `unreadable` and a missing `unpdf` in the deployed image would otherwise look
+ * exactly like a bad file.
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -32,65 +37,70 @@ export type PdfForModel =
 const MIN_TEXT_CHARS = 20
 
 /**
- * Heap ceiling for the worker. A text PDF of a few hundred pages needs well
- * under 100 MB to read 50 pages; 256 MB leaves room for a large, font-heavy
- * file and still turns a runaway allocation into a dead worker (`unreadable`)
- * long before it matters to the 1 GB-class container the app runs in. Raw
- * ArrayBuffers (inflated streams) are outside this limit; the 10 s cap bounds
- * those, and terminating the worker returns them.
+ * V8 heap ceiling for the worker: a second line of defence behind the memory cap
+ * below, which is the one that catches ArrayBuffers (these limits do not cover them).
  */
 const WORKER_LIMITS = { maxOldGenerationSizeMb: 256, maxYoungGenerationSizeMb: 32 }
 
-/**
- * Growth of the process's resident memory, while a worker runs, past which the
- * worker is killed. Needed because `resourceLimits` does not cover ArrayBuffers:
- * a 2 MB Flate stream that inflates to 2 GB grew the process by 1.3 GB inside
- * the 10 s window. A PDF that reads normally stays far under this (the 3-page
- * and 50-page fixtures move RSS by a few MB). It is process-wide RSS, so a large
- * unrelated allocation at the same moment can trip it: the cost of that is one
- * `unreadable` answer for a file that can be asked for again.
- */
-const RSS_POLL_MS = 50
+const MEMORY_POLL_MS = 50
 
 export interface PdfWorkerLimits {
   /** Wall-clock cap for opening and reading together. */
   maxMs: number
-  /** RSS growth that kills the worker; `Infinity` switches the guard off. */
-  maxRssGrowthBytes: number
+  /**
+   * The worker's own `external_memory + used_heap_size`: ArrayBuffer backing
+   * stores (where a decompressed stream lives) plus the JS heap. Per worker, so
+   * it neither depends on what the rest of the process is doing nor lets one
+   * file kill a PDF being read at the same time; `Infinity` switches it off.
+   */
+  maxWorkerBytes: number
+  /** Called with each memory sample; lets a check observe the peak of a real file. */
+  onSample?: (workerBytes: number) => void
 }
-const DEFAULT_LIMITS: PdfWorkerLimits = { maxMs: PDF_LIMITS.maxMs, maxRssGrowthBytes: 512 * 1024 * 1024 }
+const DEFAULT_LIMITS: PdfWorkerLimits = { maxMs: PDF_LIMITS.maxMs, maxWorkerBytes: 128 * 1024 * 1024 }
 
 /**
- * Reads the first `maxPages` pages and posts each one's text as it goes, so
- * pages read before a deadline are not lost. Each page is cut to `maxChars`:
- * nothing past that can be used, and a page of a few hundred MB of text must
- * not be copied across.
+ * Reads pages in order and posts each one's text as it goes, so pages read
+ * before a deadline are not lost. Each page is trimmed and cut to `maxChars`
+ * (nothing past that can be used, and a page of a few hundred MB of text must
+ * not be copied across). Stops once the character budget is spent, by the same
+ * test `extractPdfPages` applies (the `[page N]` label, 10 characters plus the
+ * digits of N, is charged to every page with text), so the pages it leaves out
+ * are exactly the ones the caller would not have used.
  */
 const WORKER_SOURCE = `
 const { parentPort, workerData } = require('node:worker_threads')
 ;(async () => {
   const { url, bytes, maxPages, maxChars } = workerData
+  let phase = 'open'
   try {
     const { getDocumentProxy } = await import(url)
     // pdf.js compiles font programs with new Function when allowed; a file we
     // did not write has no business making it do that.
     const pdf = await getDocumentProxy(bytes, { isEvalSupported: false })
+    phase = 'page'
     parentPort.postMessage({ t: 'open', pageCount: pdf.numPages })
+    let used = 0
     for (let i = 0; i < Math.min(pdf.numPages, maxPages); i++) {
+      const labelLength = 10 + String(i + 1).length
+      if (maxChars - used <= labelLength) break
       const page = await pdf.getPage(i + 1)
       let text
       try {
         const content = await page.getTextContent()
-        text = content.items.map(item => ('str' in item ? item.str + (item.hasEOL ? '\\n' : '') : '')).join('').slice(0, maxChars)
+        text = content.items.map(item => ('str' in item ? item.str + (item.hasEOL ? '\\n' : '') : '')).join('').trim().slice(0, maxChars)
       } finally {
         page.cleanup()
       }
+      if (text) used += labelLength + text.length
       parentPort.postMessage({ t: 'page', text })
     }
     parentPort.postMessage({ t: 'done' })
   } catch (error) {
     // pdf.js raises PasswordException (NEED_PASSWORD / INCORRECT_PASSWORD) for a file it cannot open without one.
-    parentPort.postMessage({ t: 'error', encrypted: error && error.name === 'PasswordException' })
+    const name = error && typeof error.name === 'string' ? error.name : 'Error'
+    const code = error && typeof error.code === 'string' ? error.code : ''
+    parentPort.postMessage({ t: 'error', encrypted: name === 'PasswordException', phase, name, code })
   }
 })()
 `
@@ -126,27 +136,46 @@ interface WorkerRun {
   pages: string[]
 }
 
+/** Only identifiers: an exception's name or code, never its message (which can quote the file). */
+function safeLabel(value: unknown): string {
+  return typeof value === 'string' && /^[\w.-]{1,60}$/.test(value) ? value : 'unknown'
+}
+
+function logFailure(cause: string): void {
+  console.error(`[media-pdf] worker failed: ${cause}`)
+}
+
 function runInWorker(bytes: Buffer, maxChars: number, limits: PdfWorkerLimits): Promise<WorkerRun> {
   return new Promise((resolve) => {
     // A copy, transferred: the caller keeps its bytes (cache, link) and the worker owns its own.
     const copy = new Uint8Array(bytes)
     const run: WorkerRun = { outcome: 'failed', pages: [] }
-    let worker: Worker
+    let worker: Worker | undefined
     let settled = false
-    const finish = (outcome: WorkerRun['outcome']) => {
+    // `cause` is logged for every outcome except a clean finish and an encrypted file.
+    const finish = (outcome: WorkerRun['outcome'], cause?: string) => {
       if (settled) return
       settled = true
-      clearTimeout(timer)
-      clearInterval(guard)
+      clearTimeout(deadline)
+      clearInterval(memoryPoll)
       run.outcome = outcome
-      void worker.terminate().catch(() => {})
+      if (cause) logFailure(cause)
+      // `terminate()` still lets queued messages through; the handlers below ignore them once settled.
+      void worker?.terminate().catch(() => {})
       resolve(run)
     }
-    const timer = setTimeout(() => finish('deadline'), limits.maxMs)
-    const rssAtStart = process.memoryUsage.rss()
-    const guard = setInterval(() => {
-      if (process.memoryUsage.rss() - rssAtStart > limits.maxRssGrowthBytes) finish('failed')
-    }, RSS_POLL_MS)
+    const deadline = setTimeout(() => finish('deadline', `time cap of ${limits.maxMs} ms reached`), limits.maxMs)
+    const memoryPoll = setInterval(() => {
+      // Answered by the worker's isolate from outside, so it works while the worker is busy inside one call.
+      worker?.getHeapStatistics().then((stats) => {
+        if (settled) return
+        const bytesInUse = stats.external_memory + stats.used_heap_size
+        limits.onSample?.(bytesInUse)
+        if (bytesInUse > limits.maxWorkerBytes) {
+          finish('failed', `memory cap of ${Math.round(limits.maxWorkerBytes / 1048576)} MB exceeded`)
+        }
+      }, () => {})
+    }, MEMORY_POLL_MS)
 
     try {
       worker = new Worker(WORKER_SOURCE, {
@@ -155,21 +184,29 @@ function runInWorker(bytes: Buffer, maxChars: number, limits: PdfWorkerLimits): 
         transferList: [copy.buffer],
         resourceLimits: WORKER_LIMITS
       })
-    } catch {
-      clearTimeout(timer)
-      clearInterval(guard)
-      resolve(run)
+    } catch (error) {
+      finish('failed', `worker could not be started (${safeLabel((error as { code?: unknown })?.code)})`)
       return
     }
-    worker.on('message', (message: { t: string, pageCount?: number, text?: string, encrypted?: boolean }) => {
+    worker.on('message', (message: { t: string, pageCount?: number, text?: string, encrypted?: boolean, phase?: string, name?: string, code?: string }) => {
+      if (settled) return
       if (message.t === 'open') run.pageCount = message.pageCount
       else if (message.t === 'page') run.pages.push(message.text ?? '')
       else if (message.t === 'done') finish('done')
-      else if (message.t === 'error') finish(message.encrypted ? 'encrypted' : 'failed')
+      else if (message.t === 'error') {
+        if (message.encrypted) return finish('encrypted')
+        const name = safeLabel(message.name)
+        const code = safeLabel(message.code)
+        // A missing `unpdf` is the deployment's fault, not the file's, and is the one an operator must be able to tell.
+        const cause = code === 'ERR_MODULE_NOT_FOUND' || code === 'ERR_INVALID_URL' || code === 'ERR_UNSUPPORTED_ESM_URL_SCHEME'
+          ? `unpdf could not be loaded (${code})`
+          : message.phase === 'open' ? `document could not be opened (${name})` : `a page could not be read (${name})`
+        finish('failed', cause)
+      }
     })
     // Crash, out of memory, or exit before it said it was done.
-    worker.on('error', () => finish('failed'))
-    worker.on('exit', () => finish('failed'))
+    worker.on('error', error => finish('failed', `worker crashed (${safeLabel((error as { code?: unknown })?.code ?? (error as Error)?.name)})`))
+    worker.on('exit', code => finish('failed', `worker exited before finishing (code ${Number.isInteger(code) ? code : 'unknown'})`))
   })
 }
 
@@ -189,14 +226,27 @@ export async function extractPdfWithLimits(bytes: Buffer, options: { maxChars: n
 
   // The caps are applied by the one implementation that owns them, over the pages
   // the worker delivered. Past the deadline only those pages exist, hence `maxPages`.
+  // `run` no longer changes (settled), so `pages` is the same array throughout.
   const readAll = run.outcome === 'done'
-  const extraction = await extractPdfPages({
-    pageCount: run.pageCount,
-    getPageText: async index => run.pages[index] ?? '',
-    maxChars: options.maxChars,
-    maxPages: readAll ? undefined : run.pages.length,
-    yieldToEventLoop: () => new Promise<void>(resolve => setImmediate(resolve))
-  })
+  let extraction
+  try {
+    extraction = await extractPdfPages({
+      pageCount: run.pageCount,
+      getPageText: async (index) => {
+        const text = run.pages[index]
+        // The worker stops at the char budget by the same rule as `extractPdfPages`; a page it did not send
+        // and the replay still wants means the two disagree, which must not read as an empty page.
+        if (text === undefined) throw new Error('page not delivered by the worker')
+        return text
+      },
+      maxChars: options.maxChars,
+      maxPages: readAll ? undefined : run.pages.length,
+      yieldToEventLoop: () => new Promise<void>(resolve => setImmediate(resolve))
+    })
+  } catch (error) {
+    logFailure(`pages could not be assembled (${safeLabel((error as Error)?.name)})`)
+    return { ok: false, reason: 'unreadable' }
+  }
   const unreadPages = Math.min(run.pageCount, PDF_LIMITS.maxPages) - run.pages.length
   if (!readAll && extraction.stoppedBy === 'pages' && unreadPages > 0) extraction.stoppedBy = 'time'
 

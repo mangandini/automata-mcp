@@ -80,19 +80,23 @@ function declaredSize(bytes: Buffer): { width: number, height: number } | undefi
 }
 
 /**
- * PNG text chunks (tEXt, zTXt, iTXt) and a late eXIf chunk. sharp 0.35 does not
- * report text chunks at all (`metadata.comments` stays undefined for them), and
- * they are free text that tools use for coordinates, device and author, so the
- * chunk list is read here. Bounded by the file: one step per chunk header.
+ * PNG text chunks (tEXt, zTXt, iTXt), a late eXIf chunk, and anything after
+ * IEND. sharp 0.35 does not report text chunks at all (`metadata.comments`
+ * stays undefined for them), and they are free text that tools use for
+ * coordinates, device and author; bytes after IEND are ignored by every decoder
+ * and therefore by `metadata()`, yet step 0 hands the original back verbatim, so
+ * a payload parked there would travel with it. Read here, bounded by the file:
+ * one step per chunk header.
  */
-function pngHasTextChunks(bytes: Buffer): boolean {
+function pngCarriesFreeText(bytes: Buffer): boolean {
   if (detectImageMime(bytes) !== 'image/png') return false
   let pos = 8
   while (pos + 8 <= bytes.length) {
     const type = bytes.toString('latin1', pos + 4, pos + 8)
     if (type === 'tEXt' || type === 'zTXt' || type === 'iTXt' || type === 'eXIf') return true
-    if (type === 'IEND') break
-    pos += 12 + bytes.readUInt32BE(pos)
+    const next = pos + 12 + bytes.readUInt32BE(pos)
+    if (type === 'IEND') return next < bytes.length
+    pos = next
   }
   return false
 }
@@ -128,7 +132,7 @@ export async function prepareImageForModel(bytes: Buffer): Promise<PreparedImage
   // the untouched original; `exif` is the contract, XMP and IPTC are the same
   // kind of data in other containers, and PNG text chunks are free text that tools
   // use for exactly this (coordinates, device, author).
-  const carriesMetadata = Boolean(metadata.exif || metadata.xmp || metadata.iptc || metadata.tifftagPhotoshop || metadata.comments?.length || pngHasTextChunks(bytes))
+  const carriesMetadata = Boolean(metadata.exif || metadata.xmp || metadata.iptc || metadata.tifftagPhotoshop || metadata.comments?.length || pngCarriesFreeText(bytes))
 
   const originalMime = detectImageMime(bytes)
   let result
