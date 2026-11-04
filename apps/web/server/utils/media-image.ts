@@ -11,16 +11,40 @@
  * here drops all metadata, and the unchanged original is handed back only when
  * it has none to drop.
  *
- * Shared libvips state is set once, here: no operation cache (a cache keeps
- * decoded pixels of attachments that belong to other people), two threads so
- * one request cannot take every core from the rest of the server.
+ * Shared libvips state is set once, at first load: no operation cache (a cache
+ * keeps decoded pixels of attachments that belong to other people), two threads
+ * so one request cannot take every core from the rest of the server.
+ *
+ * `sharp` is loaded on first use, never at module load: it is a native binary,
+ * this module sits under the tool file, and the tool files are loaded with the
+ * server, so a static import that fails (no prebuilt binary for the host's
+ * libc or architecture) would take down the web UI and every MCP kind. Lazily,
+ * a failed load makes images `unreadable` (logged once; the file is still
+ * offered as a link) and nothing else. The literal `import('sharp')` is still
+ * traced into the Nitro output, and both Dockerfiles assert it loads there.
  */
-import sharp, { type Metadata } from 'sharp'
+import type { Metadata } from 'sharp'
 import { MAX_IMAGE_PIXELS, imageByteBudget, runImageLadder, type ImageAttempt } from './media-budget.ts'
 import { detectImageMime } from './message-payload.ts'
 
-sharp.cache(false)
-sharp.concurrency(2)
+type Sharp = typeof import('sharp')['default']
+let loading: Promise<Sharp> | undefined
+
+/** `sharp`, configured once. A failed load is remembered: the binary will not appear later in this process. */
+function loadSharp(): Promise<Sharp> {
+  return loading ??= import('sharp').then(
+    (mod) => {
+      const sharp = mod.default
+      sharp.cache(false)
+      sharp.concurrency(2)
+      return sharp
+    },
+    (error: unknown) => {
+      console.error('[media] could not load sharp (its native binary); images will be offered as links only:', error)
+      throw error
+    },
+  )
+}
 
 export type PreparedImage =
   | {
@@ -107,10 +131,16 @@ function isSideways(orientation: number | undefined): boolean {
 }
 
 export async function prepareImageForModel(bytes: Buffer): Promise<PreparedImage> {
-  const open = () => sharp(bytes, { limitInputPixels: MAX_IMAGE_PIXELS, failOn: 'error' })
-
   const declared = declaredSize(bytes)
   if (declared && declared.width * declared.height > MAX_IMAGE_PIXELS) return { ok: false, reason: 'pixel-cap' }
+
+  let sharp: Sharp
+  try {
+    sharp = await loadSharp()
+  } catch {
+    return { ok: false, reason: 'unreadable' }
+  }
+  const open = () => sharp(bytes, { limitInputPixels: MAX_IMAGE_PIXELS, failOn: 'error' })
 
   let metadata: Metadata
   try {
