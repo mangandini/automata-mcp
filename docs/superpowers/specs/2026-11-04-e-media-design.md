@@ -45,37 +45,60 @@ Casos reales: CL 2026-10-22 (monto en un `.xlsx` adjunto y en capturas `[image]`
 
 ### Tool `get-message-media`
 
-- Entrada estricta (`strictInput`): `messageId` (el `id` que devuelven `search-messages` / `read-messages`). Sin `jid`: el chat sale de la fila.
+- Entrada estricta (`strictInput`): `messageId` (el `id` que devuelven `search-messages` / `read-messages`), validado como id de WhatsApp (alfanumérico, longitud acotada) antes de cualquier consulta. Sin `jid`: el chat sale de la fila.
+- Anotaciones: `readOnlyHint: true`, `openWorldHint: true` (habla con WhatsApp), `idempotentHint: false` (cada llamada crea un enlace).
 - Pasos, en este orden:
-  1. Buscar la fila por `instanceId` + `key->>'id'`, deduplicada como el resto de lecturas (`DISTINCT ON`), con el **predicado de scope en SQL** cuando el token no tiene `allChats`: `remoteJid = ANY(chats permitidos)`, **solo `remoteJid`**, el mismo predicado que `search-messages`. Así es descargable exactamente lo que el token puede leer o buscar; nunca vía `remoteJidAlt` (eso abriría el chat `@lid` de un token con scope en la forma teléfono, que no puede leerlo). Ninguna fila → 404 con **un solo mensaje** para "no existe" y "no está en tu scope" (no se pueden sondear ids).
-  2. Desenvolver el contenido como `classifyContent` (`associatedChildMessage`, `editedMessage`, `documentWithCaptionMessage`) y decidir el tipo por **payload**, no por `messageType`. `imageMessage` o `documentMessage` → continúa; cualquier otro (audio, video, sticker, view-once, ephemeral sin desenvolver, texto) → error "tipo no soportado" que nombra el tipo.
-  3. Rechazar por tamaño declarado (`fileLength`) antes de descargar si supera el **tope de enlace**.
-  4. Descargar vía Evolution (`POST /chat/getBase64FromMediaMessage/{instance}`, cliente por instancia de `useEvolutionClient()`, sin clave global). Si el DTO acepta el mensaje completo, enviar **la fila ya comprobada** (lo descargado = lo comprobado). Re-verificar el tope sobre los bytes reales.
-  5. Crear el enlace (ver abajo) y devolver `content: [...]`: primero un bloque de texto JSON con metadatos (`messageId`, `jid`, `type`, `fileName`, `mimeType`, `size`, `download: { url, expiresAt }`, `note`), luego el bloque `image` (reducida) o el texto del PDF, **dentro del presupuesto de respuesta**; si no se puede (imagen que no baja lo suficiente, PDF sin texto, archivo sobre el tope de lectura), solo metadatos + enlace y `note` lo dice (el usuario igual recibe el archivo). No se usa bloque `resource` con blob: en Claude.ai no se lee de forma fiable (ver investigación).
-- Errores de Evolution: medio expirado / no recuperable → error explícito que lo dice ("WhatsApp ya no tiene este archivo; pide que lo reenvíen"); cuenta no conectada → 503 que lo dice. Nunca un resultado vacío. (Los códigos exactos de Evolution 2.3.7 para "expirado" **están por verificar**; ver "Lo que queda al constructor".)
-- `readOnlyHint: true`, `openWorldHint: true` (habla con WhatsApp).
-- Sin `NUXT_PUBLIC_APP_URL` → el tool devuelve el contenido sin enlace y lo dice en `note`. Nunca se construye el enlace con el `Host` de la petición.
+  1. **Fila.** Buscar por `instanceId` + `key->>'id'`, deduplicada como el resto de lecturas (`DISTINCT ON`, elección determinista de la copia), con el **predicado de scope en SQL** cuando el token no tiene `allChats`: `remoteJid = ANY(chats permitidos)`, **solo `remoteJid`**, el mismo predicado que `search-messages`. Así es descargable exactamente lo que el token puede leer o buscar; nunca vía `remoteJidAlt` (abriría el chat `@lid` de un token con scope en la forma teléfono). Ninguna fila → 404 con **un solo mensaje** para "no existe" y "no está en tu scope".
+  2. **Tipo, por payload** (no por `messageType`). Desenvolver como `classifyContent` (`associatedChildMessage`, `protocolMessage.editedMessage`, `documentWithCaptionMessage`; exportar o compartir esa lógica, hoy no exportada). `imageMessage` → imagen. `documentMessage` con mime `image/*` (capturas enviadas "como documento") **y bytes mágicos de imagen** → camino de imagen. `documentMessage` PDF → camino PDF. Otro `documentMessage` → solo enlace. Cualquier otra cosa (audio, video, sticker, view-once, ephemeral, texto) → "tipo no soportado" nombrando el tipo. `fileLength` llega como texto (uint64) y puede faltar: tratar ausencia como "desconocido", no como 0.
+  3. **Tamaño declarado** (`fileLength`) sobre el **tope de enlace** → rechazado antes de descargar. Sobre el **tope de lectura** → no se descarga para Claude; se crea el enlace igual y `note` lo dice.
+  4. **Descarga** (función compartida con la ruta del enlace, ver "Descarga desde Evolution").
+  5. **Contenido para Claude**, dentro del **presupuesto de respuesta**:
+     - Imagen: escalera de reducción (abajo). Si ni el último paso cabe → solo enlace, con `note`.
+     - PDF: texto extraído con topes (abajo); `note` dice si se recortó y hasta qué página. Sin texto (escaneado) → solo enlace, con `note`.
+     - No se usa bloque `resource` con blob (en Claude.ai no se lee de forma fiable).
+  6. **Enlace** (ver abajo) y respuesta `content: [...]`: primero JSON con metadatos (`messageId`, `jid`, `type`, `fileName`, `mimeType`, `size`, `download: { url, expiresAt }`, `note`), luego el bloque `image` o el texto. Sin `NUXT_PUBLIC_APP_URL` → sin enlace, y `note` lo dice; nunca con el `Host` de la petición.
+
+### Descarga desde Evolution (una sola función, tool y enlace)
+
+- `POST /chat/getBase64FromMediaMessage/{instance}` con el **mensaje completo ya comprobado y desenvuelto** (`{ message: { key, message: <interior> } }`), nunca solo `key.id`: con solo el id Evolution busca la fila sin predicado de chat ni orden y no desenvuelve `associatedChildMessage` (fotos de álbum). Así lo descargado es exactamente lo comprobado.
+- Cliente por instancia con `createEvolutionClient(credentialsForInstance(fila de la conexión))`, que conserva el host-guard; nunca clave global.
+- `fetch` con lectura del cuerpo y **contador de bytes**: se aborta si supera `ceil(tope × 4/3) + 8 KiB` (sobre JSON + nombre/caption, también acotados). Así el base64→Buffer nunca corre sobre un cuerpo excesivo. **Límite honesto:** esto protege solo nuestro proceso; Evolution no tiene tope y `fileLength` lo escribe quien envía, así que un tamaño falso hace que Evolution cargue el archivo real (hueco que ya existe para cualquiera con la clave de instancia; documentarlo).
+- **Timeout propio 30 s** (mi decisión). Al vencer, el pedido de re-subida al teléfono sigue pendiente dentro de Evolution: **enfriamiento por mensaje** (mi decisión: 2 min) antes de volver a intentar el mismo id.
+- **Semáforo de proceso** para descargas y procesamiento (mi decisión: 2 a la vez) y **deduplicación en vuelo** por mensaje: dos peticiones simultáneas del mismo archivo comparten una descarga, sin retener nada después de responder.
+- Verificar `fileSha256` del mensaje contra los bytes cuando el mensaje lo trae (Baileys no lo verifica). Distinto → error, nunca se sirve.
+- Respuesta 201 con cuerpo `null` (mensaje solo con `messageContextInfo`) o sin `base64` → error explícito, nunca archivo vacío.
+- **Clasificación de errores** (todo llega como 400 con texto en `response.message[0]`): `Message not found` → 404 uniforme; `not of the media type` → "tipo no soportado"; texto con código 404/410 del CDN → "WhatsApp ya no tiene este archivo; pide que lo reenvíen"; timeout propio → "WhatsApp no respondió; puede que el archivo ya no esté"; cualquier otro → mensaje genérico honesto, y el texto completo al log del servidor. Ante un fallo se consulta el **estado en vivo** (`getInstanceStatus`): si no está `open`, el mensaje lo dice ("la cuenta está desconectada"). Solo al modelo/usuario autenticado; la página pública no revela el estado de la cuenta.
+
+### Procesamiento con topes (memoria y CPU)
+
+- **Tope de lectura** 10 MB (mi decisión) y **tope de enlace** 25 MB (`NUXT_WHATSAPP_MEDIA_MAX_BYTES`), ambos en `.env.example`.
+- **Imagen**: leer dimensiones de la cabecera **antes** de decodificar; tope de píxeles (mi decisión: 40 Mpx) → por encima, solo enlace. Quitar EXIF (también GPS). Escalera (JPEG mozjpeg): (0) original ≤ 1568 px de lado mayor y dentro del presupuesto → tal cual; (1) 1568 px, calidad 80→65→50; (2) 1024 px, 75→60→50; (3) 768 px, 70→55; si no cabe → solo enlace (bajo 768 px una captura de 1080 de ancho queda con dígitos ilegibles).
+- **PDF**: extracción incremental con topes de páginas (mi decisión: 50), caracteres (hasta llenar el presupuesto) y tiempo (mi decisión: 10 s); se para al llegar a cualquiera, no extrae todo para luego recortar. PDF cifrado o corrupto → solo enlace, con `note`.
+- El trabajo pesado no puede bloquear el servidor para el resto del tráfico MCP y el panel: el constructor mide y, si bloquea, lo saca del hilo principal (worker).
+- **Presupuesto de respuesta**: una sola constante; mi decisión inicial ≤ 120 000 caracteres en total, imagen en base64 incluida (≈ 85 KB de JPEG). Primera prueba en vivo: si el base64 de la imagen **no** cuenta contra el límite de Claude.ai, subir el tope de imagen (≤ 1 MB, por debajo de los 5 MB/8000 px de la API).
 
 ### Enlace de descarga
 
-- Forma: `{NUXT_PUBLIC_APP_URL}/api/media/<token>` (o prefijo equivalente fuera de `/mcp`). El token va en el **path**, nunca en query string. Mismo patrón que invitaciones y verificación: prefijo + 32 bytes aleatorios, se guarda **solo el SHA-256**, comparación por hash.
-- Tabla nueva en el esquema `app` (migración nueva, append-only): hash, conexión, token MCP que lo creó, `messageId`, chat, nombre de archivo, mime, `expires_at` (creación + 1 h), creado, contador de descargas. **Sin bytes.** Claves foráneas a `instances` y `mcp_tokens` con `ON DELETE CASCADE`: con `RESTRICT` o por defecto, `deleteInstance()` y el borrado de tokens fallarían en cuanto exista un enlace.
-- `GET` del enlace:
-  1. Hash → fila; inexistente o vencida → 404 (página/JSON simple que dice "enlace vencido o inválido", sin distinguir).
-  2. Re-comprobar que el **token MCP que lo creó** sigue activo, sigue alcanzando la conexión, sigue teniendo el tool habilitado y el chat sigue en su scope. **Esta ruta es un tercer camino de credenciales** y debe respetar la separación de `CLAUDE.md` › "The auth split": carga el token por id desde la fila del enlace y aplica `authorizesInstance()`, el gate de tool y el chequeo de scope como **predicados puros** sobre hechos cargados; las credenciales de Evolution salen de la fila de la conexión por el camino por instancia (`credentialsForInstance`), no de la petición. **Nunca** se pone ni se simula `event.context.mcpAuth` (para reutilizar `useEvolutionClient()`), y nunca se usa la sesión del navegador. Si algo falla → 404 igual. Revocar el token mata sus enlaces; **rotar su secreto no** (la rotación cambia el secreto, no lo que alcanza: un enlace filtrado sigue valiendo hasta vencer, máximo 1 h).
-  3. Volver a descargar vía Evolution, con el mismo tope; fallo de WhatsApp/Evolution → página/JSON que lo explica (expirado / desconectado), nunca un archivo vacío.
-  4. Responder el archivo con `Content-Disposition: attachment; filename*=…` (nombre original, saneado), `Content-Type` del mime, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
-- Reutilizable dentro de la hora. **Mi decisión:** tope de 20 descargas por enlace (contador por escritura condicional), para que un enlace filtrado no sirva de proxy ilimitado.
-- **Mis decisiones:** cada llamada al tool crea un enlace nuevo (no se reutiliza el de una llamada anterior); una descarga fallida (WhatsApp/Evolution) no cuenta para el tope de 20.
-- Throttle en memoria por IP en la ruta (velocidad, no control; igual que `login-throttle.ts`).
-- Filas vencidas se borran (al crear enlaces nuevos o en una tarea programada; a elección del constructor). Funciona con varias réplicas porque todo el estado está en la BD.
-- El token del enlace **no aparece en logs**: extender `redact.ts` / `plugins/redact-mcp.ts` al nuevo prefijo (hoy solo cubren `/mcp`).
+- Forma: `{NUXT_PUBLIC_APP_URL}/api/media/<token>` (prefijo exacto al constructor, fuera de `/mcp`). Token en el **path**, nunca en query. Prefijo + 32 bytes aleatorios; se guarda **solo el SHA-256** (índice único), comparación por hash.
+- **Abrir el enlace no descarga.** `GET` (y `HEAD`) sirve una **página mínima autocontenida** (sin JS, sin recursos externos), con el nombre del archivo escapado y un botón **Descargar** que es un `<form method="post">` a la misma URL. Solo el `POST` descarga de WhatsApp. Las vistas previas de enlaces y los escáneres abren `GET` pero no envían formularios — misma regla que la verificación de correo ("mail scanners open links"). Para el usuario es un toque más en el teléfono. `GET`/`HEAD` no llaman a Evolution ni cuentan descargas. Mi decisión: la página no muestra nada más que el nombre, la expiración y el botón.
+- Tabla nueva en `app` (migración nueva, append-only): hash, conexión, token MCP que lo creó, `messageId`, chat (`remoteJid`), nombre de archivo, mime, `expires_at` (creación + 1 h, indexado), creado, contador de descargas. **Sin bytes.** Claves foráneas a `instances` y `mcp_tokens` con `ON DELETE CASCADE` (deleteInstance no debe fallar por un enlace; los tokens se revocan, no se borran, así que la cascada en tokens es por coherencia).
+- `POST` del enlace, en orden:
+  1. Hash → fila; inexistente o vencida → misma página "enlace vencido o inválido", sin distinguir.
+  2. **Hechos del token compartidos con MCP:** extraer de `resolveMcpAuth` solo la consulta (`SELECT … LEFT JOIN users/memberships … EXISTS assignment`) a `selectTokenFacts(sql, { hash } | { id })` y un predicado `isTokenLive(facts)` (revocado, vencido), que `resolveMcpAuth` pasa a usar sin cambiar su orden, su log por mitad ni su 503. La deriva vive en los joins (`assigned` sobre `t.instance`, `member_org` contra la org de la instancia **del token**), por eso el texto SQL se comparte, no se copia. La ruta carga el token **por id** desde la fila del enlace y exige: `isTokenLive`, `authorizesInstance()` (miembro, org, asignación), `link.instance = token.instance`, `instanceKind(instancia) === 'whatsapp'`, el tool opt-in marcado, y el chat del enlace en el scope del token. Cualquier fallo → la misma página "vencido o inválido"; fallo de BD → 503 con log. **Nunca** se pone ni se simula `event.context.mcpAuth`, nunca se usa la sesión del navegador. Revocar el token, quitar la asignación, degradar o eliminar al miembro, borrar la conexión, desmarcar el tool o sacar el chat del scope matan sus enlaces; **rotar el secreto no** (un enlace filtrado vale hasta vencer, máx. 1 h).
+  3. **Reclamar** una descarga por escritura condicional (`UPDATE … SET downloads = downloads + 1 WHERE downloads < 20 AND expires_at > now() RETURNING`) **antes** de descargar; si la descarga falla por WhatsApp/Evolution, **devolver** el cupo. Sin reclamo posible → "límite alcanzado".
+  4. Re-leer la fila del mensaje de la BD de Evolution (`instanceId` + id + `remoteJid` guardado), re-desenvolver y descargar con la función compartida, mismos topes y `fileSha256`.
+  5. Responder con `Content-Disposition: attachment; filename*=UTF-8''…` (RFC 5987; quitar CR/LF, controles y U+202E/bidi; nombre vacío → `archivo.<ext>`; descartar el nombre de respaldo de Evolution tipo `ID.false`), `Content-Type` de una **lista permitida** (pdf, imágenes raster, ofimática); cualquier otro → `application/octet-stream`; **nunca** `text/html`, `image/svg+xml`, `application/xhtml+xml`. Además `Content-Security-Policy: sandbox`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, `Accept-Ranges: none`.
+- Ruta excluida de `server/middleware/session.ts` (como `/mcp` y `/api/webhook/`), redactada en `redact.ts` / `plugins/redact-mcp.ts` (hoy solo `/mcp`), y throttle en memoria por IP (velocidad, no control; `clientIp` toma el último salto de `X-Forwarded-For`: confirmar que en Coolify hay un solo proxy).
+- **Logs fuera del proceso**: el proxy de Coolify (Traefik) o Railway registran el path con el token en sus propios logs de acceso; el criterio "no aparece en logs" cubre solo los de la app. Decirlo en `OPS.md` y en la descripción.
+- Cada llamada al tool crea un enlace nuevo. Filas vencidas se borran (tarea programada o al crear; mi decisión: al crear, `DELETE … WHERE expires_at < now() - 1 day`). Todo el estado en BD: vale con varias réplicas.
+- **Mi decisión:** sin búfer en memoria entre descargas (el usuario decidió no guardar bytes; la página intermedia ya evita ráfagas de bots). Residual aceptado: doble toque → dos descargas.
 
 ### Opt-in
 
-- Un token con "todas las herramientas" **no** puede llamar `get-message-media`; solo un token que lo tenga marcado explícitamente.
-- El selector de scope (`TokenScopeFields.vue`) lo muestra como casilla aparte, desmarcada por defecto, también cuando "todas las herramientas" está marcado, con una línea que diga qué expone ("descarga adjuntos y crea enlaces de descarga de 1 hora").
-- Cómo se guarda (p. ej. permitir `tool_names` con extras opt-in cuando `all_tools` es verdadero, o una marca en la definición del tool que `isToolAllowed` respete) queda al constructor, con tres condiciones: tokens existentes no lo ganan sin edición; el gate sigue siendo síncrono (`enabled` se evalúa dos veces por petición); `scopeFields()` sigue escribiendo todos los ejes.
+- Marca `optIn: true` en la definición del tool, registrada junto a `TOOL_KINDS` en `mcp-kind-tool.ts` y expuesta por `api/instances/[id]/mcp-tools.get.ts`.
+- `isToolAllowed`: `allTools` concede todo **excepto** los tools opt-in, que exigen su nombre en `toolNames`. Sigue síncrono.
+- `scopeFields()` (`tokens.ts`) y `scopeFromInput()` (`scope-schema.ts`) hoy **vacían** `tool_names` cuando `all_tools` es verdadero: pasan a conservar en ese caso los nombres opt-in (y solo esos). Tokens existentes tienen `tool_names = []` → no lo ganan.
+- `TokenScopeFields.vue`: los opt-in como casillas aparte, desmarcadas, visibles también con "todas las herramientas", con la línea "descarga adjuntos y crea enlaces de descarga de 1 hora". `useTokenScope.ts`: `readOnlyScope()` **no** pre-marca opt-in aunque sean `readOnlyHint`; la etiqueta "Full access" no se usa si hay opt-in sin marcar.
 
 ## Investigación (2026-11-04)
 
@@ -94,27 +117,33 @@ Casos reales: CL 2026-10-22 (monto en un `.xlsx` adjunto y en capturas `[image]`
 - Credenciales por instancia; nunca clave global ni descarga fuera del MCP con la API key de la instancia.
 - `defineKindTool`, nombre de archivo único entre grupos, `title`, descripción escrita para el modelo.
 - Resultado con `content: [...]` pasa intacto por `normalizeToolResult` (patrón de `get-email-attachment`).
-- **Dependencias nuevas** (decisión del usuario): una librería de extracción de texto de PDF en JavaScript puro y una de procesamiento de imágenes. El constructor elige cuáles y verifica que funcionan en las tres imágenes (`apps/web/Dockerfile`, `docker/aio/Dockerfile` Alpine/musl, Railway) y en Node 22.
-- **Presupuesto de respuesta**: todo el resultado del tool (JSON + imagen en base64 o texto del PDF) cabe con margen en ~150 000 caracteres (mi decisión: objetivo ≤ 120 000).
-- **Dos topes, mi decisión** (leer y recibir son cosas distintas): tope de **lectura** (tamaño máximo del original que se intenta reducir o extraer; mi decisión 25 MB, igual al de enlace, salvo que la memoria lo desaconseje) y tope de **enlace** `NUXT_WHATSAPP_MEDIA_MAX_BYTES`, por defecto 25 MB, que también aplica la ruta. Ambos en `.env.example`.
+- **Dependencias nuevas** (decisión del usuario): extracción de texto de PDF en JavaScript puro (no `pdf-parse` v1, que lee un fichero de prueba al cargarse sin `module.parent` y rompe con el empaquetado de Nitro; candidatos `unpdf`/`pdfjs-dist`) y procesamiento de imágenes (`sharp` tiene binario musl para Alpine). Ambos Dockerfiles copian solo `.output` (`apps/web/Dockerfile`, `docker/aio/Dockerfile`): verificar que el binario nativo queda trazado ahí y añadir una comprobación en build (`require` + versión) como las que ya tiene la imagen aio. Probar el tool **desde la imagen Docker construida**, no solo en `pnpm dev`.
 - Sin framework de tests: `pnpm typecheck` + llamadas JSON-RPC reales (local y producción).
 
-## Criterios de aceptación (producción, GT/CL)
+## Criterios de aceptación (producción, GT/CL, salvo donde se diga local)
 
-1. Una búsqueda de "nómina" (o similar) con un PDF → `get-message-media` devuelve el PDF a Claude y un enlace; el enlace descarga el archivo idéntico (tamaño/hash) con su nombre, desde otro navegador sin sesión.
-2. Una imagen → bloque `image` + enlace que funciona.
+1. Búsqueda de "nómina" (o similar) con un PDF → Claude recibe su texto y un enlace; desde otro navegador sin sesión el enlace muestra la página, el botón descarga el archivo idéntico (tamaño y SHA-256) con su nombre, en **iOS Safari y Chrome Android**.
+2. Una imagen (y una captura enviada "como documento") → bloque `image` legible (registrar paso de la escalera y tamaño) + enlace.
 3. El `.xlsx` del caso CL 2026-05-14 → metadatos + enlace que lo descarga.
-4. Enlace abierto dos veces dentro de la hora → funciona; después de 1 h → "vencido".
-5. Revocar el token → sus enlaces dejan de funcionar.
+4. Enlace: `GET`/`HEAD` no descargan ni cuentan; dos descargas dentro de la hora funcionan; la 21.ª → "límite"; tras 1 h → "vencido".
+5. El enlace muere al: revocar el token, quitar la asignación, degradar/eliminar al miembro, desmarcar el tool, sacar el chat del scope, borrar la conexión. Rotar el secreto no lo mata (documentado).
 6. Mensaje de un chat fuera del scope → mismo error que un id inexistente.
-7. Token con "todas las herramientas" sin la casilla → el tool no aparece en `tools/list`.
-8. Audio/video → "tipo no soportado"; sobre el tope de enlace → rechazado antes de descargar; entre tope de lectura y tope de enlace → sin bloque, con enlace que funciona.
-9. Medio antiguo que WhatsApp ya no tiene → error explícito (registrar la antigüedad observada).
-10. El token del enlace no aparece en los logs del servidor.
+7. Token con "todas las herramientas" sin la casilla → el tool no aparece en `tools/list`; tokens existentes no lo ganan; el selector y `readOnlyScope` no lo pre-marcan.
+8. Audio/video → "tipo no soportado"; sobre el tope de enlace → rechazado antes de descargar; entre tope de lectura y de enlace → sin contenido, con enlace que funciona.
+9. Medio antiguo que WhatsApp ya no tiene → error explícito (registrar antigüedad y texto observado); cuenta desconectada → lo dice al modelo.
+10. Foto de álbum (`associatedChildMessage`) → se descarga la foto correcta, en el tool y en el enlace.
+11. Local, con archivos fabricados: PNG bomba de píxeles, PDF de 500 páginas, PDF cifrado, documento `text/html` y SVG (servidos como `octet-stream`), nombre con CR/LF y U+202E, `fileSha256` distinto → cada uno rechazado o neutralizado sin caer el proceso; RSS medido durante una descarga de 25 MB.
+12. Sin `NUXT_PUBLIC_APP_URL` → contenido sin enlace y `note` lo dice.
+13. El token del enlace no aparece en los logs de la app, tampoco en una ruta de error.
+14. La imagen Docker construida ejecuta el tool (PDF e imagen).
 
 ## Lo que queda al constructor
 
-- Texto exacto del error de medio expirado (verificar en vivo con un mensaje antiguo).
-- Elección de librerías y parámetros de reducción (dimensión, calidad) que dejen legible una captura o un comprobante.
-- Nombre exacto del prefijo de la ruta, de la tabla y del mecanismo de opt-in, dentro de las condiciones de arriba.
-- Cómo se ve el 404/error del enlace (JSON o página mínima).
+- Librerías concretas, siempre que cumplan lo de arriba en las tres imágenes.
+- Si el trabajo pesado necesita worker (medirlo).
+- Nombre exacto del prefijo de la ruta y de la tabla; aspecto de la página intermedia (mínima, sin JS).
+- Texto exacto de los errores de Evolution para medio expirado (verificar en vivo).
+
+## Documentación a actualizar
+
+`WHATSAPP_INSTRUCTIONS`, descripción del tool, `CLAUDE.md` (nueva ruta pública, tercer camino de credenciales, opt-in), `CODEMAP.md`, `OPS.md` (logs del proxy, NUXT_PUBLIC_APP_URL necesaria), `.env.example` (dos topes), `docs/whatsapp.md`, `docs/searching-whatsapp.md`, y `docs/mcp-roadmap.md` N4 (hoy dice xlsx → `resource` y "igual que read-messages": corregir a solo enlace y 404 uniforme).
