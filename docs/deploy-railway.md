@@ -30,7 +30,7 @@ The bridge needs no volume: its sessions and chats are in Postgres.
 in memory. Before the app was limited to one PDF worker at a time, two hostile
 PDFs at once peaked at 790-830 MiB with a cold cache and 860-940 MiB with a warm
 one, and a 768 MiB limit was OOM-killed in that test. With one worker the
-expected peak is about 500-570 MiB (an estimate, not yet re-measured). See [Memory for attachments](whatsapp.md#memory-for-attachments).
+expected peak is about 500-570 MiB (an estimate for two hostile PDFs with a cold cache, not yet re-measured; a full media cache adds on top). See [Memory for attachments](whatsapp.md#memory-for-attachments).
 
 > **The evolution volume is not optional.** Without `/evolution/instances`, every
 > deploy unpairs every WhatsApp account and forces a fresh QR scan on each one.

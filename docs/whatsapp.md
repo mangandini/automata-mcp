@@ -210,14 +210,15 @@ ordinary reads. Two scenarios, so read each row against its own:
 | Scenario | Limit | Result |
 |---|---|---|
 | cold cache | 1 GiB | survived every run; peak 790-830 MiB of anonymous memory |
-| cold cache | 832 MiB | survived with 2% margin (peak 813 MiB); the smallest that did |
+| cold cache, arm64 | 832 MiB | survived with 2% margin (peak 813 MiB); the smallest that did (amd64 was tried at 1 GiB and 768 MiB only) |
 | cold cache | 768 MiB | the whole container was OOM-killed |
 | warm cache (50 MB of cached files) | 1 GiB | survived, but peaked at 860-940 MiB of anonymous memory, and on amd64 memory use reached the limit itself |
 
 With one PDF worker the expected peak is about **500-570 MiB**. That is an
-estimate from the same measurements; it has not been measured again since the
-limit went in. Idle, the web app uses 55-90 MiB, and reading realistic PDFs
-(large, many fonts) stays near 250 MiB.
+estimate for two hostile PDFs with a cold cache; it has not been measured again
+since the limit went in, and a full media cache (up to 50 MB by default, plus
+overhead) adds on top of it. Measured on arm64: idle, the web app uses
+55-90 MiB, and reading realistic PDFs (large, many fonts) stays near 250 MiB.
 
 So: give the web container **1 GiB at least**, and 2 GiB for the all-in-one image
 (not measured under full load). A cache hit takes a processing slot like a

@@ -62,7 +62,16 @@ measured, in its own container.
 The image is **`linux/amd64` only**: it downloads the amd64 build of s6-overlay,
 pinned by checksum, so it cannot be built for arm64. On an arm64 host run it
 under emulation, or use [Compose](#docker-compose) with a web image you build
-on that host from `apps/web/Dockerfile`.
+on that host. `docker-compose.yml` pulls the published image, so point its `web`
+service at yours:
+
+```bash
+docker build -f apps/web/Dockerfile -t automata-web:local .   # from the repo root
+# in docker-compose.yml, under services.web:
+#   image: automata-web:local        (instead of ghcr.io/ju-li/automata-mcp-web:1)
+```
+
+(Build the web image on that host: the `sharp` binary is picked at install time.)
 
 ### Everything lives in `/data`
 

@@ -55,7 +55,7 @@ export interface PdfWorkerLimits {
    * it neither depends on what the rest of the process is doing nor lets one
    * file kill a PDF being read at the same time; `Infinity` switches it off.
    * The default (320 MB) is set from measured peaks of this sum, sampled every
-   * 5 ms: ~39 MB for a 9 MB, 240-page file with 16 embedded fonts and 80 images,
+   * 5 ms in the check (the production default is 50 ms, `pollMs`): ~39 MB for a 9 MB, 240-page file with 16 embedded fonts and 80 images,
    * ~64 MB for two sheets of 45 MB of vector operators, and ~113 MB for a 6 MB
    * file embedding one 15 MB TrueType font unsubset (145 MB for a 23 MB one).
    * Large embedded fonts are what costs: about 5 bytes held per byte of font.

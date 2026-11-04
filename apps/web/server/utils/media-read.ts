@@ -25,7 +25,7 @@ import { classifyMedia, detectImageMime, looksLikePdf } from './message-payload.
  * none) and has released it when it returns, and only then does
  * `withMediaSlot` wrap the PDF worker / image encoder. That slot is the only
  * thing bounding how many processors run at once, and PDFs go through
- * `withPdfSlot`, which also allows only one PDF worker (each up to ~450 MB) at a
+ * `withPdfSlot`, which also allows only one PDF worker (killed at a 320 MB cap of its own memory, though its RSS can spike transiently above that before the next 50 ms sample) at a
  * time, so the two processors are never called outside a slot; and nesting a download inside a
  * processing slot would let two such callers each hold a slot while waiting for
  * a second one.
