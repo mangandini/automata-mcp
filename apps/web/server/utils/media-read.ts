@@ -297,7 +297,7 @@ export async function getMessageMedia(args: {
 async function mediaFailureError(instance: AppInstance, error: unknown) {
   const failure = await describeMediaFailure(instance, error)
   // `busy` and `cooldown` know how long to wait; without it the model can only guess.
-  const wait = error instanceof MediaError && error.retryAfterSec ? ` Try again in about ${error.retryAfterSec} s.` : ''
+  const wait = error instanceof MediaError && error.retryAfterSec ? ` Wait about ${error.retryAfterSec} s before retrying.` : ''
   return createError({ statusCode: failure.status, message: failure.message + wait })
 }
 
